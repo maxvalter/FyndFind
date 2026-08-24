@@ -1,0 +1,6 @@
+{
+  "name": "Veckans fynd",
+  "install": "npm ci",
+  "start": "npx next dev --port 4371 --hostname 0.0.0.0",
+  "ports": [{ "name": "web", "port": 4371 }]
+}
