@@ -110,6 +110,55 @@ LLM_MODEL=llama-3.3-70b-versatile
 
 Utan nyckel visas fortfarande de slumpade varorna, med en manuell ICA-söklänk.
 
+## Hosting (Cloudflare + GitHub)
+
+Appen körs som en **Cloudflare Worker** via OpenNext. Push till `main` kan deployas automatiskt.
+
+### Alternativ A — GitHub Actions (redan i repot)
+
+1. Skapa ett [Cloudflare-konto](https://dash.cloudflare.com/sign-up) om du inte har ett.
+2. Skapa en API-token: [Create token](https://dash.cloudflare.com/profile/api-tokens) → mallen **Edit Cloudflare Workers**.
+3. Kopiera **Account ID** från [Workers-översikten](https://dash.cloudflare.com/?to=/:account/workers-and-pages).
+4. I GitHub: **Settings → Secrets and variables → Actions**, lägg till:
+   - `CLOUDFLARE_API_TOKEN`
+   - `CLOUDFLARE_ACCOUNT_ID`
+5. Pusha till `main` (eller kör workflow **Deploy to Cloudflare** manuellt).
+
+Adressen blir ungefär `https://veckans-fynd.<ditt-subdomän>.workers.dev`.
+
+Efter första deployen, sätt runtime-hemligheter i Cloudflare (Workers → veckans-fynd → Settings → Variables):
+
+| Namn | Syfte |
+|------|--------|
+| `LLM_API_KEY` | Receptförslag |
+| `LLM_BASE_URL` | Valfritt, t.ex. Groq |
+| `LLM_MODEL` | Valfritt |
+| `CRON_SECRET` | Skyddar `GET /api/cron/refresh` |
+
+Eller lokalt efter `npx wrangler login`:
+
+```bash
+npx wrangler secret put LLM_API_KEY
+npx wrangler secret put CRON_SECRET
+```
+
+### Alternativ B — Cloudflare Dashboard (Workers Builds)
+
+1. Öppna [Import a repository](https://dash.cloudflare.com/?to=/:account/workers-and-pages/create).
+2. Välj GitHub-repot **FyndFind**.
+3. Worker-namnet måste vara `veckans-fynd` (samma som i `wrangler.jsonc`).
+4. **Deploy command:** `npx opennextjs-cloudflare deploy`
+5. Stäng av GitHub Action-workflowen om du använder dashboarden, så du inte deployar två gånger.
+
+### Lokalt mot Workers-runtime
+
+```bash
+cp .dev.vars.example .dev.vars
+npm run preview
+```
+
+`npm run dev` är fortfarande vanliga Next.js på port 4371.
+
 ## Pusha till GitHub
 
 ```bash

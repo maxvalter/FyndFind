@@ -1,17 +1,29 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "veckans-fynd",
+  "main": ".open-next/worker.js",
   "compatibility_date": "2026-08-24",
-  "compatibility_flags": ["nodejs_compat"],
-  // Create with: npx wrangler kv namespace create DEALS_KV
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "veckans-fynd"
+    }
+  ],
   "kv_namespaces": [
     {
-      "binding": "DEALS_KV",
-      "id": "replace-after-kv-namespace-create"
+      "binding": "DEALS_KV"
     }
   ],
   "triggers": {
-    // Every 6 hours UTC — hits the same refresh path as GET /api/cron/refresh
+    // Every 6 hours UTC — pair with GET /api/cron/refresh once a scheduled handler is wired
     "crons": ["0 */6 * * *"]
   }
 }

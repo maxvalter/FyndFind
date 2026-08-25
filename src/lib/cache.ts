@@ -146,7 +146,7 @@ async function getBackend(): Promise<KvLike> {
 }
 
 async function resolveBackend(): Promise<KvLike> {
-  const binding = getCloudflareKvBinding();
+  const binding = await getCloudflareKvBinding();
   if (binding) return cloudflareBackend(binding);
   try {
     await mkdir(DATA_DIR, { recursive: true });
@@ -163,11 +163,19 @@ interface CloudflareKv {
   list(options?: { prefix?: string }): Promise<{ keys: { name: string }[] }>;
 }
 
-function getCloudflareKvBinding(): CloudflareKv | null {
+async function getCloudflareKvBinding(): Promise<CloudflareKv | null> {
+  try {
+    const { getCloudflareContext } = await import("@opennextjs/cloudflare");
+    const { env } = await getCloudflareContext({ async: true });
+    if (env.DEALS_KV) return env.DEALS_KV;
+  } catch {
+    /* next dev without Wrangler proxy, or file/memory fallback */
+  }
   const fromGlobal = (globalThis as { DEALS_KV?: CloudflareKv }).DEALS_KV;
   if (fromGlobal) return fromGlobal;
-  const env = (process.env as { DEALS_KV?: CloudflareKv }).DEALS_KV;
-  return env ?? null;
+  const fromProcess = (process.env as { DEALS_KV?: CloudflareKv }).DEALS_KV;
+  if (fromProcess && typeof fromProcess.get === "function") return fromProcess;
+  return null;
 }
 
 function cloudflareBackend(kv: CloudflareKv): KvLike {

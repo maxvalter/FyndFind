@@ -6,9 +6,14 @@
     "dev": "next dev --port 4371 --hostname 0.0.0.0",
     "build": "next build",
     "start": "next start --port 4371 --hostname 0.0.0.0",
-    "lint": "eslint"
+    "lint": "eslint",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
   },
   "dependencies": {
+    "@opennextjs/cloudflare": "^1.20.2",
     "@radix-ui/react-scroll-area": "^1.2.9",
     "@radix-ui/react-select": "^2.2.5",
     "@radix-ui/react-separator": "^1.1.7",
@@ -35,6 +40,7 @@
     "eslint": "^9.28.0",
     "eslint-config-next": "^16.3.2",
     "tailwindcss": "^4.1.8",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "wrangler": "^4.126.0"
   }
 }
