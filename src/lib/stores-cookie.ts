@@ -1,8 +1,10 @@
 import { cookies } from "next/headers";
-import type { StoreSelection } from "./types";
+import type { NextResponse } from "next/server";
+import type { SavedPlace, StoreSelection } from "./types";
 import { DEFAULT_STORES } from "./types";
 
 export const STORES_COOKIE = "fynd-stores";
+export const PLACE_COOKIE = "fynd-place";
 export const STORES_COOKIE_MAX_AGE = 60 * 60 * 24 * 180; // 180 days
 
 export function parseStoreSelection(raw: string | undefined): StoreSelection {
@@ -32,8 +34,52 @@ export function serializeStoreSelection(selection: StoreSelection): string {
   return JSON.stringify(selection);
 }
 
-export function storesCookieHeader(selection: StoreSelection): string {
-  return `${STORES_COOKIE}=${encodeURIComponent(serializeStoreSelection(selection))}; Path=/; Max-Age=${STORES_COOKIE_MAX_AGE}; SameSite=Lax`;
+export function applyStoresCookie(response: NextResponse, selection: StoreSelection): void {
+  response.cookies.set(STORES_COOKIE, serializeStoreSelection(selection), {
+    path: "/",
+    maxAge: STORES_COOKIE_MAX_AGE,
+    sameSite: "lax",
+  });
+}
+
+export function parseSavedPlace(raw: string | undefined): SavedPlace | null {
+  if (!raw) return null;
+  const candidates = [raw];
+  try {
+    candidates.unshift(decodeURIComponent(raw));
+  } catch {
+    // Cookie may already be decoded JSON.
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as Partial<SavedPlace>;
+      if (
+        typeof parsed.label !== "string" ||
+        !parsed.label.trim() ||
+        !Number.isFinite(parsed.lat) ||
+        !Number.isFinite(parsed.lng)
+      ) {
+        continue;
+      }
+      return { label: parsed.label.trim(), lat: parsed.lat!, lng: parsed.lng! };
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+export async function readPlaceCookie(): Promise<SavedPlace | null> {
+  const cookieStore = await cookies();
+  return parseSavedPlace(cookieStore.get(PLACE_COOKIE)?.value);
+}
+
+export function applyPlaceCookie(response: NextResponse, place: SavedPlace): void {
+  response.cookies.set(PLACE_COOKIE, encodeURIComponent(JSON.stringify(place)), {
+    path: "/",
+    maxAge: STORES_COOKIE_MAX_AGE,
+    sameSite: "lax",
+  });
 }
 
 export function mergeStoreSelection(

@@ -22,6 +22,7 @@ export interface Deal {
   originalPrice?: number;
   savingsPercent?: number;
   promotionLabel?: string;
+  comparisonPrice?: string;
   memberOnly?: boolean;
   category: string;
   imageUrl?: string;
@@ -29,6 +30,8 @@ export interface Deal {
   validFrom?: string;
   validTo?: string;
   rawCategory?: string;
+  /** Number of product variants included in this offer (e.g. Coop clusters). */
+  variantCount?: number;
 }
 
 export interface ChainStatus {
@@ -55,9 +58,39 @@ export interface StoreSelection {
   lidl?: string;
 }
 
+export interface SavedPlace {
+  label: string;
+  lat: number;
+  lng: number;
+}
+
 export interface ScraperResult {
   store: StoreLocation;
   deals: Deal[];
+}
+
+export type RecipeRole = "protein" | "vegetable";
+
+export interface RecipeIngredient {
+  id: string;
+  name: string;
+  chain: ChainId;
+  price: number;
+  imageUrl?: string;
+  volume?: string;
+  savingsPercent?: number;
+}
+
+export interface RecipeDish {
+  title: string;
+  whyCheap: string;
+  extraIngredients: string[];
+  recipeUrl: string;
+}
+
+export interface RecipesResponse {
+  dishes: RecipeDish[];
+  fromCache: boolean;
 }
 
 export type DealCategory =
@@ -90,9 +123,9 @@ export const DEAL_CATEGORIES: DealCategory[] = [
 ];
 
 export const DEFAULT_STORES: StoreSelection = {
-  willys: "2258",
-  hemkop: "4147",
-  ica: "ica-nara-roslagstull-1003482",
-  coop: "coop/coop-soder",
-  lidl: "SE0335",
+  willys: "2219",
+  hemkop: "4938",
+  ica: "ica-nara-alvsjo-1004436",
+  coop: "coop/coop-alvsjo",
+  lidl: "SE0258",
 };

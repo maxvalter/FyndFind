@@ -1,9 +1,14 @@
 import type { Deal, ScraperResult, StoreLocation } from "../types";
 import { categorizeDeal } from "../categories";
-import { fetchJson, fetchText } from "../http";
-import { calcSavingsPercent, parseSwedishPrice, slugify } from "../parse";
+import { cacheGet, cacheSet } from "../cache";
+import { storeOffersUrl } from "../chains";
+import { sortByDistance, type GeoPoint } from "../geo";
+import { fetchText } from "../http";
+import { calcSavingsPercent, parseComparablePrice, parseSwedishPrice, slugify } from "../parse";
 
 const ICA_STORE_SEARCH = "https://www.ica.se/api/store/search";
+const ICA_CATALOG_KEY = "catalog:ica";
+const ICA_CATALOG_TTL_SECONDS = 24 * 60 * 60;
 
 interface IcaStoreDoc {
   Id: number;
@@ -48,28 +53,78 @@ function offerSlugFromStoreId(storeSlug: string): string {
   return storeSlug.includes("/") ? storeSlug.split("/").pop()! : storeSlug;
 }
 
-export async function searchIcaStores(query: string): Promise<StoreLocation[]> {
-  const text = await fetchText(`${ICA_STORE_SEARCH}?q=${encodeURIComponent(query)}`, {
+export async function searchIcaStores(query: string, lat?: number, lng?: number): Promise<StoreLocation[]> {
+  const catalog = await loadIcaCatalog();
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const matched = terms.length
+    ? catalog.filter((store) => {
+        const haystack = `${store.name} ${store.address ?? ""} ${store.city ?? ""}`.toLowerCase();
+        return terms.every((term) => haystack.includes(term));
+      })
+    : catalog;
+
+  const pool = matched.length ? matched : catalog;
+  if (lat != null && lng != null) {
+    return nearestIcaStores({ lat, lng }, pool, 30);
+  }
+
+  return matched.slice(0, 40);
+}
+
+export async function findNearestIcaStores(
+  origin: GeoPoint,
+  limit = 5,
+): Promise<(StoreLocation & { distanceKm: number })[]> {
+  return nearestIcaStores(origin, await loadIcaCatalog(), limit);
+}
+
+function nearestIcaStores(
+  origin: GeoPoint,
+  stores: StoreLocation[],
+  limit: number,
+): (StoreLocation & { distanceKm: number })[] {
+  const withCoords = stores.filter(
+    (store): store is StoreLocation & { lat: number; lng: number } =>
+      store.lat != null && store.lng != null,
+  );
+  return sortByDistance(withCoords, origin).slice(0, limit);
+}
+
+async function loadIcaCatalog(): Promise<StoreLocation[]> {
+  const cached = await cacheGet(ICA_CATALOG_KEY);
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached) as StoreLocation[];
+      if (Array.isArray(parsed) && parsed.length) return parsed;
+    } catch {
+      /* refetch */
+    }
+  }
+
+  const text = await fetchText(`${ICA_STORE_SEARCH}?q=ica&take=1300`, {
     headers: { Accept: "application/json" },
   });
   const jsonStart = text.indexOf('{"Documents"');
   if (jsonStart === -1) return [];
   const data = JSON.parse(text.slice(jsonStart)) as { Documents: IcaStoreDoc[] };
+  const stores = (data.Documents ?? []).map(mapIcaStore);
+  await cacheSet(ICA_CATALOG_KEY, JSON.stringify(stores), ICA_CATALOG_TTL_SECONDS);
+  return stores;
+}
 
-  return data.Documents.map((doc) => {
-    const offerUrl = doc.Urls?.find((u) => u.Type === "Erbjudande")?.Url;
-    const slug = offerUrl?.match(/\/erbjudanden\/([^/]+)/)?.[1] ?? slugFromUrl(doc.Url);
-    return {
-      chain: "ica" as const,
-      id: slug ?? String(doc.Id),
-      name: doc.MarketingName || doc.Name,
-      address: doc.VisitingAddress,
-      city: doc.VisitingCity,
-      lat: doc.Latitude ? parseFloat(doc.Latitude) : undefined,
-      lng: doc.Longitude ? parseFloat(doc.Longitude) : undefined,
-      url: offerUrl ?? doc.Url,
-    };
-  });
+function mapIcaStore(doc: IcaStoreDoc): StoreLocation {
+  const offerUrl = doc.Urls?.find((u) => u.Type === "Erbjudande")?.Url;
+  const slug = offerUrl?.match(/\/erbjudanden\/([^/]+)/)?.[1] ?? slugFromUrl(doc.Url);
+  return {
+    chain: "ica",
+    id: slug ?? String(doc.Id),
+    name: doc.MarketingName || doc.Name,
+    address: doc.VisitingAddress,
+    city: doc.VisitingCity,
+    lat: doc.Latitude ? parseFloat(doc.Latitude) : undefined,
+    lng: doc.Longitude ? parseFloat(doc.Longitude) : undefined,
+    url: offerUrl ?? doc.Url,
+  };
 }
 
 function slugFromUrl(url?: string): string | undefined {
@@ -103,7 +158,7 @@ function parseStoreFromHtml(html: string, slug: string, pageUrl: string): StoreL
   return {
     chain: "ica",
     id: slug,
-    name: decodeUnicode(nameMatch?.[1]) ?? "ICA-butik",
+    name: decodeUnicode(nameMatch?.[1]) ?? "Ica-butik",
     address: decodeUnicode(addressMatch?.[1]),
     city: decodeUnicode(cityMatch?.[1]),
     lat: latMatch ? parseFloat(latMatch[1]) : undefined,
@@ -154,8 +209,7 @@ function parseIcaOffer(offer: IcaOffer, storeSlug: string): Deal | null {
   if (!name) return null;
 
   const storeInfo = offer.stores?.[0];
-  const regularRange = storeInfo?.regularPrice ?? "";
-  const originalPrice = parsePriceRangeHigh(regularRange);
+  const originalPrice = parseComparablePrice(storeInfo?.regularPrice);
   const mechanics = offer.parsedMechanics;
 
   let price = originalPrice ?? 0;
@@ -169,11 +223,11 @@ function parseIcaOffer(offer: IcaOffer, storeSlug: string): Deal | null {
     } else {
       price = parseSwedishPrice(mechanics.value2) ?? price;
     }
+  } else {
+    const fromLabel = parseSwedishPrice(details.mechanicInfo ?? offer.comparisonPrice);
+    if (fromLabel && fromLabel > 0) price = fromLabel;
   }
 
-  if (price <= 0 && originalPrice) {
-    price = originalPrice * 0.85;
-  }
   if (price <= 0) return null;
 
   const imageUrl =
@@ -196,17 +250,10 @@ function parseIcaOffer(offer: IcaOffer, storeSlug: string): Deal | null {
     memberOnly: /stammis/i.test(offer.restriction ?? ""),
     category: categorizeDeal(name, rawCategory),
     imageUrl,
-    productUrl: `https://www.ica.se/erbjudanden/${storeSlug}/`,
+    productUrl: storeOffersUrl("ica", storeSlug),
     validTo: offer.validTo?.split("T")[0],
     rawCategory,
   };
-}
-
-function parsePriceRangeHigh(value: string): number | undefined {
-  const parts = value.replace(/:/g, ",").split("-");
-  const nums = parts.map((p) => parseSwedishPrice(p)).filter((n): n is number => n != null);
-  if (!nums.length) return undefined;
-  return Math.max(...nums);
 }
 
 export const icaScraper = { searchStores: searchIcaStores, scrape: scrapeIca };

@@ -32,6 +32,45 @@ function parsePriceNumber(value: string): number | undefined {
   return Number.isFinite(num) ? num : undefined;
 }
 
+/** True for min–max strings like "15,95-22,66 kr" or "Spara 3,60-10,85 kr". */
+export function hasPriceRange(input: string): boolean {
+  return /\d(?:[\d\s,]*)\s*[-–]\s*\d/.test(input);
+}
+
+/**
+ * Parse a single comparable price. Returns undefined for ranges so callers
+ * do not invent one number from "15,95–22,66 kr".
+ */
+export function parseComparablePrice(
+  input: string | number | null | undefined,
+): number | undefined {
+  if (input == null) return undefined;
+  if (typeof input === "number") return Number.isFinite(input) ? input : undefined;
+  if (hasPriceRange(input)) return undefined;
+  return parseSwedishPrice(input);
+}
+
+/**
+ * Lowest price from Axfood 30-day strings like "47,95 kr/st" or "20,35-23,62 kr/st".
+ * For ranges, uses the lower bound (the true "lägsta" among variants).
+ */
+export function parseLowestHistoricalPrice(
+  input: string | number | null | undefined,
+): number | undefined {
+  if (input == null) return undefined;
+  if (typeof input === "number") return Number.isFinite(input) ? input : undefined;
+
+  const rangeMatch = input.match(/(\d[\d\s,]*)\s*[-–]\s*(\d[\d\s,]*)/);
+  if (rangeMatch) {
+    const low = parsePriceNumber(rangeMatch[1]);
+    const high = parsePriceNumber(rangeMatch[2]);
+    if (low == null || high == null) return undefined;
+    return Math.min(low, high);
+  }
+
+  return parseSwedishPrice(input);
+}
+
 export function formatSek(amount: number | undefined): string {
   if (amount == null || !Number.isFinite(amount)) return "–";
   return `${amount.toFixed(2).replace(".", ",")} kr`;

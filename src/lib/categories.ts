@@ -1,5 +1,26 @@
 import type { DealCategory } from "./types";
 
+/** Short/ambiguous stems that must not match inside other words (nöt → nötter). */
+const WHOLE_WORD_ONLY = new Set([
+  "bär",
+  "färs",
+  "fil",
+  "kaka",
+  "kex",
+  "mjöl",
+  "nöt",
+  "olja",
+  "ost",
+  "paj",
+  "ris",
+  "sop",
+  "te",
+  "tork",
+  "vatten",
+  "vin",
+  "öl",
+]);
+
 const RULES: { category: DealCategory; keywords: string[] }[] = [
   {
     category: "Kött & chark",
@@ -7,21 +28,35 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
       "kött",
       "fläsk",
       "nöt",
+      "nötkött",
+      "nötfärs",
+      "nötbog",
       "kyckling",
       "korv",
+      "falukorv",
+      "prinskorv",
+      "grillkorv",
+      "wienerkorv",
       "bacon",
       "skinka",
       "färs",
+      "köttfärs",
       "biff",
+      "oxfilé",
+      "oxbringa",
       "lamm",
       "kalkon",
       "chark",
       "salami",
-      "falukorv",
-      "grill",
       "entrecote",
       "ytterfilé",
-      "köttfärs",
+      "innanlår",
+      "karré",
+      "kotlett",
+      "kassler",
+      "högrev",
+      "revben",
+      "hamburgare",
     ],
   },
   {
@@ -29,8 +64,11 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
     keywords: [
       "fisk",
       "lax",
+      "laxfilé",
       "torsk",
       "räk",
+      "räka",
+      "räkor",
       "skaldjur",
       "sill",
       "makrill",
@@ -39,6 +77,7 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
       "tonfisk",
       "sej",
       "kolja",
+      "scampi",
     ],
   },
   {
@@ -52,8 +91,13 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
       "gurka",
       "sallad",
       "potatis",
+      "färskpotatis",
       "lök",
+      "rödlök",
+      "purjolök",
+      "salladslök",
       "morot",
+      "morötter",
       "paprika",
       "bär",
       "citron",
@@ -62,6 +106,21 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
       "spenat",
       "svamp",
       "kål",
+      "blomkål",
+      "vitkål",
+      "rödkål",
+      "grönkål",
+      "päron",
+      "melon",
+      "vindruv",
+      "jordgubb",
+      "hallon",
+      "mango",
+      "ananas",
+      "kiwi",
+      "zucchini",
+      "aubergine",
+      "sparris",
     ],
   },
   {
@@ -75,6 +134,7 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
       "fil",
       "kvarg",
       "créme",
+      "crème",
       "bregott",
       "keso",
       "ägg",
@@ -104,15 +164,21 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
     keywords: [
       "pasta",
       "ris",
+      "risgryn",
+      "jasminris",
+      "basmatiris",
       "konserv",
       "sås",
       "olja",
+      "olivolja",
+      "rapsolja",
       "krydda",
       "soppa",
       "müsli",
       "flingor",
       "havregryn",
       "mjöl",
+      "vetemjöl",
       "socker",
       "kaffe",
       "te",
@@ -123,14 +189,7 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
   },
   {
     category: "Fryst",
-    keywords: [
-      "fryst",
-      "frysta",
-      "glass",
-      "färskfryst",
-      "fryspizza",
-      "frysta",
-    ],
+    keywords: ["fryst", "frysta", "glass", "färskfryst", "fryspizza"],
   },
   {
     category: "Dryck",
@@ -174,7 +233,7 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
       "blöja",
       "toalett",
       "hushåll",
-      "sop",
+      "soppåse",
       "rengöring",
       "tork",
       "dukar",
@@ -182,14 +241,35 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
   },
 ];
 
+export function hasKeyword(text: string, keyword: string): boolean {
+  if (!keyword) return false;
+  const haystack = normalizeHaystack(text);
+  const kw = keyword.toLowerCase();
+  const escaped = escapeRegExp(kw);
+  const wholeWordOnly = WHOLE_WORD_ONLY.has(kw) || [...kw].length < 3;
+  const letter = "\\p{L}\\p{N}";
+  const pattern = wholeWordOnly
+    ? `(?<![${letter}])${escaped}(?![${letter}])`
+    : `(?<![${letter}])${escaped}|${escaped}(?![${letter}])`;
+  return new RegExp(pattern, "iu").test(haystack);
+}
+
 export function categorizeDeal(name: string, rawCategory?: string): DealCategory {
-  const haystack = `${name} ${rawCategory ?? ""}`.toLowerCase();
+  const haystack = `${name} ${rawCategory ?? ""}`;
 
   for (const rule of RULES) {
-    if (rule.keywords.some((kw) => haystack.includes(kw))) {
+    if (rule.keywords.some((kw) => hasKeyword(haystack, kw))) {
       return rule.category;
     }
   }
 
   return "Övrigt";
+}
+
+function normalizeHaystack(text: string): string {
+  return text.toLowerCase().replace(/[-_/]+/g, " ");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

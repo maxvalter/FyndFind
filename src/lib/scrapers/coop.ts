@@ -1,12 +1,17 @@
 import type { Deal, ScraperResult, StoreLocation } from "../types";
 import { categorizeDeal } from "../categories";
+import { coopStorePath, storeOffersUrl } from "../chains";
 import { fetchJson, fetchText } from "../http";
-import { calcSavingsPercent, slugify } from "../parse";
-import { haversineKm } from "../geo";
+import { slugify } from "../parse";
+import { cacheGet, cacheSet } from "../cache";
+import { sortByDistance, type GeoPoint } from "../geo";
 
 const COOP_BASE = "https://www.coop.se";
 const DKE_KEY = "32895bd5b86e4a5ab6e94fb0bc8ae234";
 const STORE_KEY = "990520e65cc44eef89e9e9045b57f4e9";
+const COOP_CATALOG_KEY = "catalog:coop:v2";
+const COOP_CATALOG_TTL_SECONDS = 24 * 60 * 60;
+const COOP_ENRICH_CONCURRENCY = 8;
 
 interface CoopStoreListItem {
   storeId: number;
@@ -43,9 +48,10 @@ interface DkeOffer {
     onlineProductName?: string;
     enrichedComparisonPrice?: string;
     formattedComparativePriceText?: string;
+    comparativePriceText?: string;
   };
   categoryTeam?: { name?: string };
-  unifiedSplash?: { tag?: string };
+  unifiedSplash?: { tag?: string; prefix?: string; value?: string };
   clusterInteriorOffers?: DkeOffer[];
   campaignEndDate?: string;
   campaignStartDate?: string;
@@ -70,53 +76,127 @@ function dkeHeaders(): HeadersInit {
 }
 
 export function coopSlugToPath(slug: string): string {
-  if (slug.startsWith("coop/") || slug.startsWith("stora-coop/")) {
-    return `/butiker-erbjudanden/${slug}/`;
-  }
-  return `/butiker-erbjudanden/coop/${slug}/`;
+  return coopStorePath(slug);
 }
 
 export async function searchCoopStores(query: string): Promise<StoreLocation[]> {
+  const catalog = await loadCoopCatalog();
+  const terms = expandCoopTerms(query);
+  if (!terms.length) return catalog.slice(0, 40);
+  const matched = catalog
+    .map((store) => ({ store, score: scoreCoopLocation(store, terms) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.store);
+  return matched.slice(0, 40);
+}
+
+export async function findNearestCoopStores(
+  lat: number,
+  lng: number,
+  limit = 5,
+): Promise<(StoreLocation & { distanceKm: number })[]> {
+  return nearestCoopStores({ lat, lng }, await loadCoopCatalog(), limit);
+}
+
+function nearestCoopStores(
+  origin: GeoPoint,
+  stores: StoreLocation[],
+  limit: number,
+): (StoreLocation & { distanceKm: number })[] {
+  const withCoords = stores.filter(
+    (store): store is StoreLocation & { lat: number; lng: number } =>
+      store.lat != null && store.lng != null,
+  );
+  return sortByDistance(withCoords, origin).slice(0, limit);
+}
+
+async function loadCoopCatalog(): Promise<StoreLocation[]> {
+  const cached = await cacheGet(COOP_CATALOG_KEY);
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached) as StoreLocation[];
+      if (Array.isArray(parsed) && parsed.length > 50) return parsed;
+    } catch {
+      /* refetch */
+    }
+  }
+
   const data = await fetchJson<{ stores?: CoopStoreListItem[] }>(
-    `https://proxy.api.coop.se/external/store/stores?api-version=v1&query=${encodeURIComponent(query)}`,
+    "https://proxy.api.coop.se/external/store/stores?api-version=v1&query=coop",
     { headers: storeHeaders(STORE_KEY) },
   );
-
-  const stores = (data.stores ?? []).filter(
-    (s) => typeof s.url === "string" && s.url.includes("butiker-erbjudanden"),
+  const list = (data.stores ?? []).filter(
+    (store) => typeof store.url === "string" && store.url.includes("butiker-erbjudanden"),
   );
 
-  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-  const ranked = [...stores].sort((a, b) => scoreCoopStore(b, terms) - scoreCoopStore(a, terms));
-  const toEnrich = (terms.length ? ranked.filter((s) => scoreCoopStore(s, terms) > 0) : ranked).slice(0, 40);
-  const enrichList = toEnrich.length ? toEnrich : ranked.slice(0, 40);
+  const detailed: StoreLocation[] = [];
+  const enrich = async (store: CoopStoreListItem): Promise<StoreLocation> => {
+    try {
+      const detail = await fetchJson<CoopStoreDetail>(
+        `https://proxy.api.coop.se/external/store/stores/${store.ledgerAccountNumber}?api-version=v1`,
+        { headers: storeHeaders(STORE_KEY), timeoutMs: 12000 },
+      );
+      const mapped = mapCoopStore(detail, store.url);
+      if (mapped.lat != null && mapped.lng != null) return mapped;
+    } catch {
+      /* retry below */
+    }
+    return mapCoopStoreFromList(store);
+  };
 
-  const detailed = await Promise.all(
-    enrichList.map(async (s) => {
-      try {
-        const detail = await fetchJson<CoopStoreDetail>(
-          `https://proxy.api.coop.se/external/store/stores/${s.ledgerAccountNumber}?api-version=v1`,
-          { headers: storeHeaders(STORE_KEY) },
-        );
-        return mapCoopStore(detail, s.url);
-      } catch {
-        return mapCoopStoreFromList(s);
+  for (let i = 0; i < list.length; i += COOP_ENRICH_CONCURRENCY) {
+    const chunk = list.slice(i, i + COOP_ENRICH_CONCURRENCY);
+    detailed.push(...(await Promise.all(chunk.map(enrich))));
+  }
+
+  const missing = list.filter((_, index) => detailed[index]?.lat == null || detailed[index]?.lng == null);
+  if (missing.length) {
+    const retried = await Promise.all(missing.map(enrich));
+    let retryIndex = 0;
+    for (let i = 0; i < detailed.length; i += 1) {
+      if (detailed[i]?.lat == null || detailed[i]?.lng == null) {
+        detailed[i] = retried[retryIndex]!;
+        retryIndex += 1;
       }
-    }),
-  );
+    }
+  }
 
+  await cacheSet(COOP_CATALOG_KEY, JSON.stringify(detailed), COOP_CATALOG_TTL_SECONDS);
   return detailed;
 }
 
-function scoreCoopStore(store: CoopStoreListItem, terms: string[]): number {
-  const haystack = store.name.toLowerCase();
-  return terms.reduce((score, term) => score + (haystack.includes(term) ? 10 : 0), 0);
+function fold(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/å/g, "a")
+    .replace(/ä/g, "a")
+    .replace(/ö/g, "o");
+}
+
+function expandCoopTerms(query: string): string[] {
+  const raw = query.toLowerCase().trim();
+  const ascii = fold(raw);
+  const terms = new Set<string>();
+  for (const token of [raw, ascii, ...raw.split(/[\s-/]+/), ...ascii.split(/[\s-/]+/)]) {
+    if (token.length < 3) continue;
+    terms.add(token);
+    if (token.length >= 7) terms.add(token.slice(0, 5));
+  }
+  return [...terms];
+}
+
+function scoreCoopLocation(store: StoreLocation, terms: string[]): number {
+  const haystack = fold(`${store.name} ${store.address ?? ""} ${store.city ?? ""} ${store.url ?? ""}`);
+  return terms.reduce((score, term) => score + (haystack.includes(fold(term)) ? 10 : 0), 0);
 }
 
 export async function getCoopStore(slug: string): Promise<StoreLocation> {
   const path = coopSlugToPath(slug);
   const html = await fetchText(`${COOP_BASE}${path}`);
-  const ledger = html.match(/ledgerAccountNumber["\']?\s*:\s*"?(\d{6})"?/i)?.[1];
+  const ledger = extractLedgerAccount(html);
   if (ledger) {
     const detail = await fetchJson<CoopStoreDetail>(
       `https://proxy.api.coop.se/external/store/stores/${ledger}?api-version=v1`,
@@ -134,10 +214,10 @@ export async function getCoopStore(slug: string): Promise<StoreLocation> {
 }
 
 function mapCoopStore(detail: CoopStoreDetail, urlPath: string): StoreLocation {
-  const slugMatch = urlPath.match(/butiker-erbjudanden\/(.+)\/?$/);
+  const slugMatch = urlPath.match(/butiker-erbjudanden\/(.+?)\/?$/);
   return {
     chain: "coop",
-    id: slugMatch?.[1] ?? detail.ledgerAccountNumber,
+    id: (slugMatch?.[1] ?? detail.ledgerAccountNumber).replace(/\/+$/, ""),
     name: detail.name,
     address: detail.address?.split(",")[0]?.trim(),
     city: detail.address?.split(",").pop()?.trim(),
@@ -148,19 +228,26 @@ function mapCoopStore(detail: CoopStoreDetail, urlPath: string): StoreLocation {
 }
 
 function mapCoopStoreFromList(item: CoopStoreListItem): StoreLocation {
-  const slugMatch = item.url.match(/butiker-erbjudanden\/(.+)\/?$/);
+  const slugMatch = item.url.match(/butiker-erbjudanden\/(.+?)\/?$/);
   return {
     chain: "coop",
-    id: slugMatch?.[1] ?? item.ledgerAccountNumber,
+    id: (slugMatch?.[1] ?? item.ledgerAccountNumber).replace(/\/+$/, ""),
     name: item.name,
     url: `${COOP_BASE}${item.url}`,
   };
 }
 
+function extractLedgerAccount(html: string): string | undefined {
+  const pageId = html.match(/store_page_id"\s*:\s*"(\d{4,6})"/i)?.[1];
+  const raw =
+    pageId ?? html.match(/ledgerAccountNumber["']?\s*:\s*"?(\d{4,6})"?/i)?.[1];
+  return raw ? raw.padStart(6, "0") : undefined;
+}
+
 async function resolveLedgerAccount(slug: string): Promise<string> {
   const path = coopSlugToPath(slug);
   const html = await fetchText(`${COOP_BASE}${path}`);
-  const ledger = html.match(/ledgerAccountNumber["\']?\s*:\s*"?(\d{6})"?/i)?.[1];
+  const ledger = extractLedgerAccount(html);
   if (!ledger) throw new Error(`Kunde inte hitta Coop-butik för ${slug}`);
   return ledger;
 }
@@ -181,20 +268,37 @@ export async function scrapeCoop(slug: string): Promise<ScraperResult> {
   const seen = new Set<string>();
 
   for (const offer of offers) {
-    const cluster = [offer, ...(offer.clusterInteriorOffers ?? [])];
-    for (const entry of cluster) {
-      const deal = parseDkeOffer(entry, slug);
-      if (deal && !seen.has(deal.id)) {
-        seen.add(deal.id);
-        deals.push(deal);
-      }
+    const interiors = offer.clusterInteriorOffers ?? [];
+    const deal = parseDkeOffer(offer, slug, interiors.length);
+    if (deal && !seen.has(deal.id)) {
+      seen.add(deal.id);
+      deals.push(deal);
     }
   }
 
   return { store, deals };
 }
 
-function parseDkeOffer(offer: DkeOffer, slug: string): Deal | null {
+function formatCoopComparisonPrice(raw?: string): string | undefined {
+  if (!raw) return undefined;
+  const text = raw.replace(/\u00a0/g, " ").replace(/\s+/g, " ").replace(/\.+$/, "").trim();
+  if (!text) return undefined;
+
+  const units = [...text.matchAll(/\/\s*(kg|hg|g|liter|l|st|ml|cl)\b/gi)];
+  if (units.length > 1) return undefined;
+
+  let formatted = text.replace(/\s*kr\s*/gi, " kr ").replace(/\s+/g, " ").trim();
+  if (!/kr/i.test(formatted)) {
+    formatted = formatted.replace(
+      /(\d(?:[\d\s,.]*(?:[-–][\d\s,.]+)?)?)\s*(\/)/,
+      "$1 kr$2",
+    );
+  }
+  formatted = formatted.replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim();
+  return formatted || undefined;
+}
+
+function parseDkeOffer(offer: DkeOffer, slug: string, variantCount = 1): Deal | null {
   const content = offer.content ?? {};
   const priceInfo = offer.priceInformation ?? {};
   const title = content.title?.trim();
@@ -215,21 +319,13 @@ function parseDkeOffer(offer: DkeOffer, slug: string): Deal | null {
   if (imageUrl?.startsWith("//")) imageUrl = `https:${imageUrl}`;
 
   const memberOnly = Boolean(priceInfo.isMemberPrice);
-  const promotionLabel = offer.unifiedSplash?.tag ?? (quantity > 1 ? `${quantity} för ${totalPrice} kr` : undefined);
-
-  const compareText = content.enrichedComparisonPrice ?? content.formattedComparativePriceText;
-  let originalPrice: number | undefined;
-  if (compareText) {
-    const match = compareText.match(/([\d,\.]+)/);
-    if (match) {
-      const perUnit = parseFloat(match[1].replace(",", "."));
-      const amount = content.amountInformation ?? "";
-      const grams = amount.match(/([\d,\.]+)\s*g/i);
-      if (grams && compareText.includes("/kg")) {
-        originalPrice = Math.round(perUnit * (parseFloat(grams[1].replace(",", ".")) / 1000) * 100) / 100;
-      }
-    }
-  }
+  const splash = offer.unifiedSplash;
+  const promotionLabel =
+    quantity > 1
+      ? splash?.prefix && splash?.value
+        ? `${splash.prefix} ${splash.value}`
+        : `${quantity} för ${totalPrice} kr`
+      : undefined;
 
   const rawCategory = offer.categoryTeam?.name;
 
@@ -240,82 +336,22 @@ function parseDkeOffer(offer: DkeOffer, slug: string): Deal | null {
     brand,
     volume: content.amountInformation,
     price,
-    originalPrice: originalPrice && originalPrice > price ? originalPrice : undefined,
-    savingsPercent: calcSavingsPercent(price, originalPrice),
     promotionLabel,
+    comparisonPrice: formatCoopComparisonPrice(
+      content.formattedComparativePriceText ??
+        content.enrichedComparisonPrice ??
+        content.comparativePriceText,
+    ),
     memberOnly,
     category: categorizeDeal(name, rawCategory),
     imageUrl,
-    productUrl: `${COOP_BASE}${coopSlugToPath(slug)}`,
+    productUrl: storeOffersUrl("coop", slug),
     validFrom: offer.campaignStartDate?.split("T")[0],
     validTo: offer.campaignEndDate?.split("T")[0],
     rawCategory,
+    variantCount: variantCount > 1 ? variantCount : undefined,
   };
 }
 
-export async function findNearestCoopStores(
-  lat: number,
-  lng: number,
-  limit = 5,
-): Promise<(StoreLocation & { distanceKm: number })[]> {
-  const city = (await reverseGeocodeCity(lat, lng)) ?? "Stockholm";
-  const citySlug = city
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[åä]/g, "a")
-    .replace(/ö/g, "o");
-
-  const data = await fetchJson<{ stores?: CoopStoreListItem[] }>(
-    `https://proxy.api.coop.se/external/store/stores?api-version=v1&query=${encodeURIComponent(city)}`,
-    { headers: storeHeaders(STORE_KEY) },
-  );
-
-  const pool = (data.stores ?? []).filter(
-    (s) =>
-      typeof s.url === "string" &&
-      s.url.includes("butiker-erbjudanden") &&
-      (s.url.toLowerCase().includes(citySlug) ||
-        s.name.toLowerCase().includes(city.toLowerCase())),
-  );
-
-  const detailed = await Promise.all(
-    pool.slice(0, 30).map(async (s) => {
-      try {
-        const detail = await fetchJson<CoopStoreDetail>(
-          `https://proxy.api.coop.se/external/store/stores/${s.ledgerAccountNumber}?api-version=v1`,
-          { headers: storeHeaders(STORE_KEY) },
-        );
-        return mapCoopStore(detail, s.url);
-      } catch {
-        return null;
-      }
-    }),
-  );
-
-  return detailed
-    .filter((s): s is StoreLocation => s != null && s.lat != null && s.lng != null)
-    .map((s) => ({ ...s, distanceKm: haversineKm(lat, lng, s.lat!, s.lng!) }))
-    .filter((s) => s.distanceKm <= 35)
-    .sort((a, b) => a.distanceKm - b.distanceKm)
-    .slice(0, limit);
-}
-
-export async function reverseGeocodeCity(lat: number, lng: number): Promise<string | null> {
-  try {
-    const data = await fetchJson<{ address?: { city?: string; town?: string; village?: string } }>(
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,
-      {
-        headers: {
-          Accept: "application/json",
-          "User-Agent": "VeckansFynd/1.0 (grocery-deals-app)",
-        },
-      },
-    );
-    return data.address?.city ?? data.address?.town ?? data.address?.village ?? null;
-  } catch {
-    return null;
-  }
-}
-
 export const coopScraper = { searchStores: searchCoopStores, scrape: scrapeCoop, findNearest: findNearestCoopStores };
+

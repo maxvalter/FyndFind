@@ -1,8 +1,10 @@
 import type { ChainId, Deal, ScraperResult, StoreLocation } from "../types";
 import { categorizeDeal } from "../categories";
+import { storeOffersUrl } from "../chains";
 import { fetchJson } from "../http";
 import {
   calcSavingsPercent,
+  parseLowestHistoricalPrice,
   parseSwedishPrice,
   slugify,
 } from "../parse";
@@ -82,7 +84,7 @@ function mapAxfoodStore(store: AxfoodStore): StoreLocation {
     city: store.address?.town,
     lat: store.geoPoint?.latitude,
     lng: store.geoPoint?.longitude,
-    url: `${BASE}/erbjudanden/butik/${store.storeId}`,
+    url: storeOffersUrl("willys", store.storeId),
   };
 }
 
@@ -94,8 +96,9 @@ export async function scrapeWillys(storeId: string): Promise<ScraperResult> {
   );
 
   const deals: Deal[] = [];
+  const storeUrl = store.url ?? storeOffersUrl("willys", storeId) ?? `${BASE}/erbjudanden`;
   for (const item of data.results ?? []) {
-    const deal = parseAxfoodCampaignItem(item, "willys", BASE);
+    const deal = parseAxfoodCampaignItem(item, "willys", storeUrl);
     if (deal) deals.push(deal);
   }
 
@@ -105,52 +108,55 @@ export async function scrapeWillys(storeId: string): Promise<ScraperResult> {
 export function parseAxfoodCampaignItem(
   item: CampaignItem,
   chain: ChainId,
-  baseUrl: string,
+  storeUrl: string,
 ): Deal | null {
   const promo = item.potentialPromotions?.[0];
   const nameParts = [item.name, promo?.description, item.manufacturer].filter(Boolean);
   const name = nameParts.join(" ").trim();
   if (!name) return null;
 
-  let price = parseSwedishPrice(item.price) ?? item.priceValue ?? 0;
+  const shelfPrice = parseSwedishPrice(item.price) ?? item.priceValue;
+  const savePrice = promo?.savePrice ?? "";
+  const isTemporaryOffer = /tillfälligt/i.test(savePrice);
+
+  let price = shelfPrice ?? 0;
   let originalPrice: number | undefined;
-  let promotionLabel = promo?.rewardLabel || promo?.cartLabel || promo?.savePrice;
-  let memberOnly = promo?.campaignType === "LOYALTY";
+  let promotionLabel: string | undefined;
+  const memberOnly = promo?.campaignType === "LOYALTY";
 
   if (promo) {
-    const qualifyingCount = promo.qualifyingCount;
+    const qualifyingCount = promo.qualifyingCount ?? 0;
     const rewardPrice = parseSwedishPrice(promo.rewardLabel?.split("/")[0]);
 
-    if (qualifyingCount && qualifyingCount > 1) {
-      const total = parseSwedishPrice(promo.rewardLabel?.split("/")[0]);
+    if (qualifyingCount > 1) {
+      const total = rewardPrice;
       if (total) {
         price = Math.round((total / qualifyingCount) * 100) / 100;
-        promotionLabel = promo.conditionLabelFormatted || `${qualifyingCount} för ${total} kr`;
+        promotionLabel =
+          promo.conditionLabelFormatted ||
+          promo.cartLabel ||
+          `${qualifyingCount} för ${total} kr`;
       }
-    } else if (rewardPrice && rewardPrice > 0 && rewardPrice < price) {
-      originalPrice = price;
+    } else if (rewardPrice && rewardPrice > 0) {
       price = rewardPrice;
     }
 
-    const historical = parseSwedishPrice(item.offlinePromotionLowestHistoricalPrice);
-    if (historical && historical > price) {
-      originalPrice = historical;
-    }
+    // Only the advertised 30-day lowest price (incl. lower bound of ranges).
+    // Catalog/compare prices like item.price are not ordinarie on the flyer.
+    const historical = parseLowestHistoricalPrice(item.offlinePromotionLowestHistoricalPrice);
+    if (historical && historical > price) originalPrice = historical;
 
-    const savePrice = promo.savePrice ?? "";
-    if (savePrice.toLowerCase().includes("spara")) {
-      const savings = parseSwedishPrice(savePrice.replace(/spara/i, ""));
-      if (savings && !originalPrice) originalPrice = price + savings;
-    }
-
-    if (savePrice.toLowerCase().includes("tillfälligt") && price > 0) {
-      originalPrice = price * 2;
+    if (!promotionLabel) {
+      promotionLabel = isTemporaryOffer
+        ? savePrice
+        : promo.cartLabel || promo.rewardLabel || savePrice || undefined;
     }
   }
 
-  if (!originalPrice && item.priceValue && item.priceValue > price) {
-    originalPrice = item.priceValue;
+  if (originalPrice != null && originalPrice <= price) {
+    originalPrice = undefined;
   }
+  if (price <= 0) return null;
 
   const productCode = promo?.mainProductCode || item.code;
   const rawCategory = promo?.name ?? item.name;
@@ -164,11 +170,11 @@ export function parseAxfoodCampaignItem(
     price,
     originalPrice,
     savingsPercent: calcSavingsPercent(price, originalPrice),
-    promotionLabel: promotionLabel ?? undefined,
+    promotionLabel: promotionLabel || undefined,
     memberOnly,
     category: categorizeDeal(name, rawCategory),
     imageUrl: item.image?.url,
-    productUrl: productCode ? `${baseUrl}/produkt/${productCode}` : `${baseUrl}/erbjudanden/butik`,
+    productUrl: storeUrl,
     validTo: promo?.endDate,
     validFrom: promo?.startDate,
     rawCategory,

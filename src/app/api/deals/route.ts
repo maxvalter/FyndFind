@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCachedDeals, selectionCacheKey, setCachedDeals } from "@/lib/cache";
-import { scrapeAllChains } from "@/lib/scrapers";
+import { getDealsForSelection } from "@/lib/deals";
 import { DEFAULT_STORES, type StoreSelection } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 function parseSelection(searchParams: URLSearchParams): StoreSelection {
   return {
@@ -19,29 +19,7 @@ export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
   const selection = parseSelection(searchParams);
   const refresh = searchParams.get("refresh") === "1";
-  const cacheKey = selectionCacheKey(selection);
 
-  if (!refresh) {
-    const cached = getCachedDeals(cacheKey);
-    if (cached) {
-      return NextResponse.json({
-        deals: cached.deals,
-        statuses: cached.statuses,
-        fetchedAt: cached.fetchedAt,
-        fromCache: true,
-      });
-    }
-  }
-
-  const { deals, statuses } = await scrapeAllChains(selection);
-  const fetchedAt = new Date().toISOString();
-
-  setCachedDeals(cacheKey, { deals, statuses, fetchedAt });
-
-  return NextResponse.json({
-    deals,
-    statuses,
-    fetchedAt,
-    fromCache: false,
-  });
+  const payload = await getDealsForSelection(selection, { refresh });
+  return NextResponse.json(payload);
 }

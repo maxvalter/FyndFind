@@ -1,4 +1,5 @@
 import type { Deal, ScraperResult, StoreLocation } from "../types";
+import { storeOffersUrl } from "../chains";
 import { fetchJson } from "../http";
 import { parseAxfoodCampaignItem } from "./willys";
 
@@ -47,7 +48,7 @@ function mapStore(store: AxfoodStore): StoreLocation {
     city: store.address?.town,
     lat: store.geoPoint?.latitude,
     lng: store.geoPoint?.longitude,
-    url: `${BASE}/erbjudanden/butik/${store.storeId}`,
+    url: storeOffersUrl("hemkop", store.storeId),
   };
 }
 
@@ -59,8 +60,9 @@ export async function scrapeHemkop(storeId: string): Promise<ScraperResult> {
   );
 
   const deals: Deal[] = [];
+  const storeUrl = store.url ?? storeOffersUrl("hemkop", storeId) ?? `${BASE}/erbjudanden`;
   for (const item of data.results ?? []) {
-    const deal = parseAxfoodCampaignItem(item, "hemkop", BASE);
+    const deal = parseAxfoodCampaignItem(item, "hemkop", storeUrl);
     if (deal) deals.push(deal);
   }
 

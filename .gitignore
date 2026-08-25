@@ -15,6 +15,9 @@
 /.next/
 /out/
 
+# local deals cache (Cloudflare KV analogue)
+/.data/
+
 # production
 /build
 

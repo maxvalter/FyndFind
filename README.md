@@ -19,7 +19,8 @@ Första laddningen kan ta **10–20 sekunder** eftersom erbjudanden hämtas live
 - **Återbesök** — cookien läses server-side, ingen platsprompt.
 - **Manuellt val** — klicka på en kedjekort för att söka och byta butik, eller använd **Använd min plats**.
 - **Sök och filter** — fritextsökning och kategoriflikar (Kött & chark, Mejeri & ost, m.fl.).
-- **Uppdatera** — tvingar bort 30-minuters cache (`refresh=1`).
+- **Middagstips** — slumpar ett kött och grönsaker från aktuella erbjudanden och föreslår 1–3 billiga rätter med länk till ICA:s receptsök.
+- **Uppdatera** — tvingar bort cache (`refresh=1`).
 
 ## API
 
@@ -33,6 +34,14 @@ Hämtar aggregerade erbjudanden.
 | `refresh=1` | Hoppar över cache |
 
 **Svar:** `{ deals, statuses, fetchedAt, fromCache }`
+
+### `POST /api/recipes`
+
+Tar ett valt protein och grönsaker och returnerar 1–3 rättnamn med ICA-söklänkar. Kräver `LLM_API_KEY`.
+
+**Kropp:** `{ protein, vegetables }` där varje vara har `id`, `name`, `chain`, `price`.
+
+**Svar:** `{ dishes: [{ title, whyCheap, extraIngredients, recipeUrl }], fromCache }`
 
 **Standardbutiker** om inga anges:
 
@@ -59,7 +68,7 @@ Hittar närmaste butik per kedja och sätter `fynd-stores`-cookien.
 | Willys / Hemköp | Axfood butikskatalog + `/search/campaigns/offline` |
 | ICA | Butikssök (`/api/store/search`) + veckans erbjudanden inbäddade i `/erbjudanden/{slug}/` |
 | Coop | Coop Store API + DKE `/dke/offers/sorting-groups/{ledgerAccountNumber}` |
-| Lidl | Lidl Plus Stores/Offer API (`stores.lidlplus.com`, `offers.lidlplus.com`) |
+| Lidl | Lidl Plus butikskatalog (`stores.lidlplus.com`) + veckans reklamblad (`digital-leaflet.lidlplus.com`) |
 
 Scrapers körs parallellt med felisolering — en kedja som fallerar stoppar inte de andra.
 
@@ -82,6 +91,24 @@ src/
 - Next.js 16 (App Router), React 19, TypeScript
 - Tailwind CSS v4, shadcn/ui, lucide-react
 - Dev-server på port **4371**
+
+## Receptförslag (LLM)
+
+Sätt miljövariabler i `.env.local`. OpenAI-nycklar (`sk-…`) använder standard-URL:en — kopiera inte Groq-raderna då.
+
+```bash
+LLM_API_KEY=sk-...
+```
+
+Groq (valfritt, bara med Groq-nyckel):
+
+```bash
+LLM_API_KEY=gsk_...
+LLM_BASE_URL=https://api.groq.com/openai/v1
+LLM_MODEL=llama-3.3-70b-versatile
+```
+
+Utan nyckel visas fortfarande de slumpade varorna, med en manuell ICA-söklänk.
 
 ## Pusha till GitHub
 

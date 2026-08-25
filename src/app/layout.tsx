@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Veckans fynd",
-  description: "Jämför veckans mat erbjudanden från Willys, Hemköp, ICA, Coop och Lidl.",
+  description: "Jämför veckans mat erbjudanden från Willys, Hemköp, Ica, Coop och Lidl.",
 };
 
 export default function RootLayout({
