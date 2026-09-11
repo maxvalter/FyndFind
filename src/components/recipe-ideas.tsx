@@ -152,15 +152,6 @@ export function RecipesPanel({ deals, dealsLoading, storeKey, onClose }: Recipes
             </div>
           ) : (
             <div className="space-y-4">
-              <ul className="space-y-2">
-                {proteins.map((item) => (
-                  <IngredientRow key={item.id} item={item} kind="Protein" />
-                ))}
-                {vegetables.map((item) => (
-                  <IngredientRow key={item.id} item={item} kind="Grönt" />
-                ))}
-              </ul>
-
               {recipesLoading ? (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -216,6 +207,15 @@ export function RecipesPanel({ deals, dealsLoading, storeKey, onClose }: Recipes
                   </a>
                 </div>
               )}
+
+              <ul className="space-y-2">
+                {proteins.map((item) => (
+                  <IngredientRow key={item.id} item={item} kind="Protein" />
+                ))}
+                {vegetables.map((item) => (
+                  <IngredientRow key={item.id} item={item} kind="Grönt" />
+                ))}
+              </ul>
             </div>
           )}
         </div>
