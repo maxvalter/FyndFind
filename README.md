@@ -13,6 +13,29 @@ npm run dev
 
 Första laddningen kan ta **10–20 sekunder** eftersom erbjudanden hämtas live från fem kedjor parallellt.
 
+### Lokal utveckling (rekommenderat)
+
+`npm run dev` startar Next.js **plus** en Wrangler/miniflare-proxy för Cloudflare KV. Vid första besök scrapas fem kedjor parallellt och Coop/ICA/Lidl laddar hela butikskataloger — det kan sluka minne och ibland krascha dev-servern.
+
+Använd **`dev:local`** istället — filcache i `.data/deals/`, ingen miniflare, ingen live-scraping (förrän du trycker Uppdatera eller kör cache-kommandon):
+
+```bash
+# 1. Fyll cachen en gång (ca 15–30 s)
+npm run cache:fetch
+
+# 2. Starta lättvikts-servern
+npm run dev:local
+```
+
+| Kommando | Vad det gör |
+|----------|-------------|
+| `npm run dev:local` | Filcache, ingen miniflare, cache-only |
+| `npm run cache:fetch` | Hämtar & sparar erbjudanden till `.data/deals/` |
+| `npm run cache:warm` | Uppdaterar cache via API (kräver igång server) |
+| `npm run dev` | Full miljö med Cloudflare KV-proxy + live-scraping |
+
+**Cursor Cloud Agents** stänger av dev-servern efter inaktivitet — det är separat från scraping. Kör `npm run dev:local` i en lokal terminal för längre sessioner.
+
 ## Funktioner
 
 - **Geolocation vid första besök** — hittar närmaste butik per kedja och sparar valet i cookien `fynd-stores` (180 dagar).
@@ -80,7 +103,7 @@ src/
   components/       deals-app.tsx + shadcn/ui
   lib/
     scrapers/       En modul per kedja + index.ts
-    cache.ts        30-minuters in-memory cache
+    cache.ts        Fil/KV-cache (6 h TTL)
     categories.ts   Nyckelordskategorisering
     chains.ts       Kedjemetadata
     types.ts        Delade typer

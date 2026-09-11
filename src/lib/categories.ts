@@ -1,18 +1,22 @@
 import type { DealCategory } from "./types";
 
-/** Short/ambiguous stems that must not match inside other words (nöt → nötter). */
+/** Short/ambiguous stems that must not match inside other words (nöt → nötter, lax → flax). */
 const WHOLE_WORD_ONLY = new Set([
   "bär",
   "färs",
   "fil",
   "kaka",
+  "kebab",
   "kex",
+  "lax",
   "mjöl",
   "nöt",
   "olja",
   "ost",
   "paj",
+  "räk",
   "ris",
+  "sej",
   "sop",
   "te",
   "tork",
@@ -38,6 +42,9 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
       "grillkorv",
       "wienerkorv",
       "bacon",
+      "sidfläsk",
+      "pancetta",
+      "kebab",
       "skinka",
       "färs",
       "köttfärs",
@@ -65,10 +72,15 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
       "fisk",
       "lax",
       "laxfilé",
+      "laxbit",
+      "laxsida",
+      "röklax",
+      "gravadlax",
       "torsk",
       "räk",
       "räka",
       "räkor",
+      "räksallad",
       "skaldjur",
       "sill",
       "makrill",
@@ -76,6 +88,7 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
       "musslor",
       "tonfisk",
       "sej",
+      "sejfilé",
       "kolja",
       "scampi",
     ],
@@ -139,6 +152,7 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
       "keso",
       "ägg",
       "margarin",
+      "mejeri",
     ],
   },
   {
@@ -153,6 +167,7 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
       "muffins",
       "tårta",
       "bakverk",
+      "bageri",
       "croissant",
       "baguette",
       "pizza",
@@ -162,6 +177,8 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
   {
     category: "Skafferi",
     keywords: [
+      "skafferi",
+      "kolonial",
       "pasta",
       "ris",
       "risgryn",
@@ -189,7 +206,7 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
   },
   {
     category: "Fryst",
-    keywords: ["fryst", "frysta", "glass", "färskfryst", "fryspizza"],
+    keywords: ["fryst", "frysta", "djupfryst", "frysvaror", "glass", "färskfryst", "fryspizza"],
   },
   {
     category: "Dryck",
@@ -220,6 +237,7 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
       "gelé",
       "lakrits",
       "marabou",
+      "konfektyr",
     ],
   },
   {
@@ -241,6 +259,15 @@ const RULES: { category: DealCategory; keywords: string[] }[] = [
   },
 ];
 
+/** Store departments that mix several of our categories — never use as a fallback. */
+const MIXED_RAW_CATEGORY = [
+  "färskvaror",
+  "färskt protein",
+  "fågel fisk",
+  "fisk kött",
+  "kött fisk",
+];
+
 export function hasKeyword(text: string, keyword: string): boolean {
   if (!keyword) return false;
   const haystack = normalizeHaystack(text);
@@ -255,15 +282,25 @@ export function hasKeyword(text: string, keyword: string): boolean {
 }
 
 export function categorizeDeal(name: string, rawCategory?: string): DealCategory {
-  const haystack = `${name} ${rawCategory ?? ""}`;
+  const fromName = matchingCategories(name);
+  if (fromName.length > 0) return fromName[0];
 
-  for (const rule of RULES) {
-    if (rule.keywords.some((kw) => hasKeyword(haystack, kw))) {
-      return rule.category;
-    }
-  }
+  const raw = rawCategory?.trim();
+  if (!raw || isMixedRawCategory(raw)) return "Övrigt";
 
-  return "Övrigt";
+  const fromRaw = matchingCategories(raw);
+  return fromRaw.length === 1 ? fromRaw[0] : "Övrigt";
+}
+
+function matchingCategories(text: string): DealCategory[] {
+  return RULES.filter((rule) => rule.keywords.some((kw) => hasKeyword(text, kw))).map(
+    (rule) => rule.category,
+  );
+}
+
+function isMixedRawCategory(raw: string): boolean {
+  const normalized = normalizeHaystack(raw);
+  return MIXED_RAW_CATEGORY.some((needle) => normalized.includes(needle));
 }
 
 function normalizeHaystack(text: string): string {

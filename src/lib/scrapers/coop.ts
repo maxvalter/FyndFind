@@ -4,6 +4,7 @@ import { coopStorePath, storeOffersUrl } from "../chains";
 import { fetchJson, fetchText } from "../http";
 import { slugify } from "../parse";
 import { cacheGet, cacheSet } from "../cache";
+import { isCacheOnlyMode } from "../local-dev";
 import { sortByDistance, type GeoPoint } from "../geo";
 
 const COOP_BASE = "https://www.coop.se";
@@ -121,6 +122,8 @@ async function loadCoopCatalog(): Promise<StoreLocation[]> {
       /* refetch */
     }
   }
+
+  if (isCacheOnlyMode()) return [];
 
   const data = await fetchJson<{ stores?: CoopStoreListItem[] }>(
     "https://proxy.api.coop.se/external/store/stores?api-version=v1&query=coop",

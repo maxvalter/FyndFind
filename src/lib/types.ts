@@ -79,6 +79,7 @@ export interface RecipeIngredient {
   imageUrl?: string;
   volume?: string;
   savingsPercent?: number;
+  comparisonPrice?: string;
 }
 
 export interface RecipeDish {

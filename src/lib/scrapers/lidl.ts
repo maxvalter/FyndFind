@@ -1,10 +1,11 @@
 import type { Deal, ScraperResult, StoreLocation } from "../types";
 import { categorizeDeal } from "../categories";
 import { cacheGet, cacheSet } from "../cache";
+import { isCacheOnlyMode } from "../local-dev";
 import { storeOffersUrl } from "../chains";
 import { sortByDistance, type GeoPoint } from "../geo";
 import { fetchJson, fetchJsonSafe } from "../http";
-import { calcSavingsPercent, slugify } from "../parse";
+import { calcSavingsPercent, formatKrPerKg, slugify, volumeImpliesPerKg } from "../parse";
 
 const COUNTRY = "SE";
 const STORES_BASE = "https://stores.lidlplus.com/api";
@@ -147,6 +148,8 @@ async function loadLidlCatalog(): Promise<StoreLocation[]> {
     }
   }
 
+  if (isCacheOnlyMode()) return [];
+
   const catalog = await fetchJson<LidlStore[]>(`${STORES_BASE}/v4/${COUNTRY}`, {
     headers: lidlHeaders(),
   });
@@ -250,10 +253,13 @@ function parseLidlProduct(product: LidlLeafletProduct, campaign: LidlCampaign): 
     box?.oldPrice && box.oldPrice > price ? box.oldPrice : undefined;
   const memberOnly = box?.priceType === "LidlPlus";
   const discount = box?.discount?.trim();
-  const { volume, comparisonPrice } = parseLidlPackaging(
+  const { volume: rawVolume, comparisonPrice: parsedComparison } = parseLidlPackaging(
     product.additionalInfo,
     box?.disclaimers,
   );
+  const perKg = volumeImpliesPerKg(rawVolume);
+  const volume = perKg ? stripLidlPerKgPrefix(rawVolume) : rawVolume;
+  const comparisonPrice = parsedComparison ?? (perKg ? formatKrPerKg(price) : undefined);
   const dates = parseLidlDateRange(
     product.badges?.find((badge) => badge.type === "AvailableInStoreFrom")?.title ??
       campaign.subtitle,
@@ -343,6 +349,15 @@ function toIsoDate(year: number, month: number, day: number): string | undefined
     return undefined;
   }
   return date.toISOString().slice(0, 10);
+}
+
+function stripLidlPerKgPrefix(volume?: string): string | undefined {
+  if (!volume) return undefined;
+  const stripped = volume
+    .replace(/^\s*\/\s*kg\s*/i, "")
+    .replace(/^\((.*)\)$/s, "$1")
+    .trim();
+  return stripped || undefined;
 }
 
 export const lidlScraper = { searchStores: searchLidlStores, scrape: scrapeLidl };

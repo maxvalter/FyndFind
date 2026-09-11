@@ -1,4 +1,5 @@
 import { hasKeyword } from "./categories";
+import { comparableKrPerKg, formatKrPerKg, formatSek } from "./parse";
 import type { ChainId, Deal, RecipeDish, RecipeIngredient, RecipeRole } from "./types";
 
 const PROTEIN_KEYWORDS = [
@@ -125,6 +126,9 @@ const FRUIT_KEYWORDS = [
 
 const MAX_VEGETABLES = 16;
 export const MAX_PROTEINS = 3;
+const PROTEIN_POOL_SIZE = 5;
+/** Skip luxury cuts when cheaper everyday protein exists. */
+const MAX_PROTEIN_KR_PER_KG = 120;
 
 export interface RecipePick {
   proteins: Deal[];
@@ -160,7 +164,7 @@ export function proteinType(deal: Pick<Deal, "name" | "brand">): string {
 export function pickRecipeIngredients(deals: Deal[], seed: number): RecipePick {
   const proteinDeals = deals.filter((deal) => recipeRole(deal) === "protein");
   const vegDeals = deals.filter((deal) => recipeRole(deal) === "vegetable");
-  const uniqueVeg = uniqueVegetablesByType(vegDeals).sort(compareDealValue).slice(0, MAX_VEGETABLES);
+  const uniqueVeg = uniqueVegetablesByType(vegDeals).sort(compareMealCost).slice(0, MAX_VEGETABLES);
 
   return {
     proteins: pickProteins(proteinDeals, seed),
@@ -193,6 +197,7 @@ export function toRecipeIngredient(deal: Deal): RecipeIngredient {
     imageUrl: deal.imageUrl,
     volume: deal.volume,
     savingsPercent: deal.savingsPercent,
+    comparisonPrice: recipeUnitLabel(deal),
   };
 }
 
@@ -221,25 +226,24 @@ export function buildRecipePrompt(
       : "(inga grönsaker på rea just nu)";
   const proteinList = proteins.map((item) => formatIngredientLine(item)).join("\n");
 
-  return `Du är en svensk hushållskock. Föreslå exakt 3 billiga vardagsrätter baserat på dessa rea-varor.
+  return `Du är en svensk hushållskock. Föreslå exakt 3 budgetvänliga rätter utifrån listan av ingredienser nedan:
 
-Köttförslag (upp till tre — använd ett i varje rätt, gärna olika kött i de tre rätterna):
+Billigaste proteiner på rea (upp till tre — använd ett i varje rätt):
 ${proteinList}
 
-Alla grönsaker på rea (använd de som passar, gärna flera olika i varje rätt):
+Grönsaker på rea, billigaste först (använd de som passar, gärna flera olika i varje rätt):
 ${vegList}
 
+Utgå ifrån att användaren har vissa enkla varor hemma, t ex mejeri, kryddor, torrvaror.
+
 Regler:
-- Svenska vardagsrätter som går att laga hemma
 - Föreslå exakt 3 rätter
-- Varje rätt ska använda ett av köttförslagen
-- Om det finns flera kött, variera så att olika rätter använder olika kött när det går
-- Plocka från listan med grönsaker — nämn dem i titeln när de är en tydlig del av rätten
-- Få extraingredienser, bara vanligt skafferi (olja, salt, peppar, ris, pasta)
+- Varje rätt ska använda ett av proteinerna
+- Prioritera låg kilopris/jämförelsepris, inte lyxstyck
+- Om det finns flera proteiner, variera rätterna
 - Ingen recepttext, inga steg, inga länkar
 - Svara med strikt JSON: {"dishes":[{"title":"...","whyCheap":"...","extraIngredients":["ris"]}]}
-- title är rättens namn på svenska (t.ex. "Ugnskyckling med broccoli")
-- whyCheap är en kort mening om varför det blir billigt
+- title är rättens namn på svenska (t.ex. "fläskpannkaka")
 - extraIngredients är bara det som inte redan finns bland rea-varorna`;
 }
 
@@ -304,15 +308,15 @@ function matchesAny(text: string, keywords: readonly string[]): boolean {
 function pickProteins(deals: Deal[], seed: number): Deal[] {
   if (deals.length === 0) return [];
 
-  const unique = uniqueByType(deals, proteinType).sort(compareDealValue);
-  const rotatedUnique = rotate(unique, seed);
-  const picked = rotatedUnique.slice(0, MAX_PROTEINS);
-  if (picked.length >= MAX_PROTEINS) return picked;
-
-  const remaining = deals
-    .filter((deal) => !picked.some((item) => item.id === deal.id))
-    .sort(compareDealValue);
-  return [...picked, ...rotate(remaining, seed).slice(0, MAX_PROTEINS - picked.length)];
+  const unique = uniqueByType(deals, proteinType).sort(compareMealCost);
+  const affordable = unique.filter((deal) => {
+    const kg = comparableKrPerKg(deal);
+    return kg == null || kg <= MAX_PROTEIN_KR_PER_KG;
+  });
+  const ranked = affordable.length >= MAX_PROTEINS ? affordable : unique;
+  const pool = ranked.slice(0, PROTEIN_POOL_SIZE);
+  if (pool.length <= MAX_PROTEINS) return pool;
+  return seededShuffle(pool, seed).slice(0, MAX_PROTEINS).sort(compareMealCost);
 }
 
 function uniqueVegetablesByType(deals: Deal[]): Deal[] {
@@ -324,32 +328,47 @@ function uniqueByType(deals: Deal[], typeOf: (deal: Deal) => string): Deal[] {
   for (const deal of deals) {
     const type = typeOf(deal);
     const existing = byType.get(type);
-    if (!existing || compareDealValue(deal, existing) < 0) {
+    if (!existing || compareMealCost(deal, existing) < 0) {
       byType.set(type, deal);
     }
   }
   return [...byType.values()];
 }
 
-function rotate<T>(items: T[], seed: number): T[] {
-  if (items.length === 0) return [];
-  const start = mod(seed, items.length);
-  return items.slice(start).concat(items.slice(0, start));
+function compareMealCost(a: Deal, b: Deal): number {
+  const costA = mealCost(a);
+  const costB = mealCost(b);
+  if (costA !== costB) return costA - costB;
+  return a.price - b.price;
 }
 
-function compareDealValue(a: Deal, b: Deal): number {
-  const savings = (b.savingsPercent ?? 0) - (a.savingsPercent ?? 0);
-  if (savings !== 0) return savings;
-  return a.price - b.price;
+function mealCost(deal: Deal): number {
+  return comparableKrPerKg(deal) ?? deal.price;
+}
+
+function recipeUnitLabel(deal: Deal): string | undefined {
+  const existing = deal.comparisonPrice?.trim();
+  if (existing) return existing;
+  const kg = comparableKrPerKg(deal);
+  if (kg == null) return undefined;
+  return formatKrPerKg(kg);
+}
+
+function seededShuffle<T>(items: T[], seed: number): T[] {
+  const copy = [...items];
+  let state = seed >>> 0 || 1;
+  for (let i = copy.length - 1; i > 0; i--) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    const j = Math.floor((state / 0x100000000) * (i + 1));
+    const current = copy[i]!;
+    copy[i] = copy[j]!;
+    copy[j] = current;
+  }
+  return copy;
 }
 
 function formatIngredientLine(item: RecipeIngredient): string {
   const volume = item.volume ? `, ${item.volume}` : "";
-  const saving =
-    item.savingsPercent != null && item.savingsPercent > 0 ? `, −${Math.round(item.savingsPercent)}%` : "";
-  return `- ${item.name}${volume} (${item.chain}, ${item.price} kr${saving})`;
-}
-
-function mod(value: number, n: number): number {
-  return ((value % n) + n) % n;
+  const unit = item.comparisonPrice ? `, ${item.comparisonPrice}` : "";
+  return `- ${item.name}${volume} (${item.chain}, ${formatSek(item.price)}${unit})`;
 }

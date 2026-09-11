@@ -1,5 +1,6 @@
 import { DEALS_TTL_MS, getCachedStore, isFresh, listKnownStores, setCachedStore } from "./cache";
 import { categorizeDeal } from "./categories";
+import { isCacheOnlyMode } from "./local-dev";
 import { scrapeChain } from "./scrapers";
 import { DEFAULT_STORES, type ChainId, type ChainStatus, type Deal, type StoreSelection } from "./types";
 
@@ -31,11 +32,12 @@ export async function getDealsForSelection(
     if (!part.fromCache) fromCache = false;
   }
 
-  for (const deal of deals) {
+  const unique = dedupeDeals(deals);
+  for (const deal of unique) {
     deal.category = categorizeDeal(deal.name, deal.rawCategory);
   }
 
-  deals.sort((a, b) => {
+  unique.sort((a, b) => {
     const savingsA = a.savingsPercent ?? 0;
     const savingsB = b.savingsPercent ?? 0;
     if (savingsB !== savingsA) return savingsB - savingsA;
@@ -43,7 +45,7 @@ export async function getDealsForSelection(
   });
 
   return {
-    deals,
+    deals: unique,
     statuses,
     fetchedAt: fetchedAt || new Date().toISOString(),
     fromCache,
@@ -92,6 +94,28 @@ export async function refreshStoredDeals(options?: {
   return { refreshed, skipped, failed };
 }
 
+function dedupeDeals(deals: Deal[]): Deal[] {
+  const seenIds = new Set<string>();
+  const seenIdentity = new Set<string>();
+  const unique: Deal[] = [];
+
+  for (const deal of deals) {
+    if (seenIds.has(deal.id)) continue;
+    const identity = [
+      deal.chain,
+      deal.name.toLowerCase().replace(/\s+/g, " ").trim(),
+      deal.price,
+      (deal.volume ?? "").toLowerCase().replace(/\s+/g, " ").trim(),
+    ].join("|");
+    if (seenIdentity.has(identity)) continue;
+    seenIds.add(deal.id);
+    seenIdentity.add(identity);
+    unique.push(deal);
+  }
+
+  return unique;
+}
+
 async function loadChainDeals(
   chain: ChainId,
   storeId: string,
@@ -110,6 +134,26 @@ async function loadChainDeals(
         status: cached.status,
         fetchedAt: cached.fetchedAt,
         fromCache: true,
+      };
+    }
+    if (isCacheOnlyMode()) {
+      if (cached) {
+        return {
+          deals: cached.deals,
+          status: cached.status,
+          fetchedAt: cached.fetchedAt,
+          fromCache: true,
+        };
+      }
+      return {
+        deals: [],
+        status: {
+          chain,
+          ok: false,
+          error: "Ingen cache — kör npm run cache:warm (med server igång) eller npm run cache:fetch",
+        },
+        fetchedAt: new Date().toISOString(),
+        fromCache: false,
       };
     }
   }

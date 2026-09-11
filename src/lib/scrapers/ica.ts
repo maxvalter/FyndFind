@@ -1,6 +1,7 @@
 import type { Deal, ScraperResult, StoreLocation } from "../types";
 import { categorizeDeal } from "../categories";
 import { cacheGet, cacheSet } from "../cache";
+import { isCacheOnlyMode } from "../local-dev";
 import { storeOffersUrl } from "../chains";
 import { sortByDistance, type GeoPoint } from "../geo";
 import { fetchText } from "../http";
@@ -100,6 +101,8 @@ async function loadIcaCatalog(): Promise<StoreLocation[]> {
       /* refetch */
     }
   }
+
+  if (isCacheOnlyMode()) return [];
 
   const text = await fetchText(`${ICA_STORE_SEARCH}?q=ica&take=1300`, {
     headers: { Accept: "application/json" },

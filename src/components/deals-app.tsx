@@ -1,7 +1,7 @@
 "use client";
 
 import { LocationPicker } from "@/components/location-picker";
-import { RecipeIdeas } from "@/components/recipe-ideas";
+import { RecipesPanel } from "@/components/recipe-ideas";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,7 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
 import { CHAINS, getChainMeta, storeOffersUrl, type ChainMeta } from "@/lib/chains";
 import {
   readFavoriteDeals,
@@ -50,7 +50,6 @@ import {
 } from "@/lib/utils-app";
 import {
   AlertCircle,
-  Check,
   ChefHat,
   ChevronDown,
   ExternalLink,
@@ -59,7 +58,6 @@ import {
   MapPin,
   RefreshCw,
   Search,
-  ShoppingBag,
   Store,
   X,
 } from "lucide-react";
@@ -127,8 +125,7 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
   });
   const [favorites, setFavorites] = useState<Deal[]>([]);
   const [favoritesReady, setFavoritesReady] = useState(false);
-  const [favoritesOpen, setFavoritesOpen] = useState(false);
-  const [section, setSection] = useState<"recipes" | "deals">("recipes");
+  const [openPanel, setOpenPanel] = useState<"favorites" | "recipes" | null>(null);
   const dealsRequestId = useRef(0);
 
   useEffect(() => {
@@ -420,30 +417,47 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
               </p>
             )}
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            className="relative shrink-0"
-            aria-label="Favoriter"
-            aria-haspopup="dialog"
-            aria-expanded={favoritesOpen}
-            onClick={() => {
-              closeStoresMenu();
-              setFavoritesOpen(true);
-            }}
-          >
-            <Heart
-              className={`h-5 w-5 ${
-                favorites.length > 0 ? "fill-primary text-primary" : ""
-              }`}
-            />
-            {favorites.length > 0 ? (
-              <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
-                {favorites.length > 99 ? "99+" : favorites.length}
-              </span>
-            ) : null}
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="shrink-0"
+              aria-label="Receptförslag"
+              aria-haspopup="dialog"
+              aria-expanded={openPanel === "recipes"}
+              onClick={() => {
+                closeStoresMenu();
+                setOpenPanel("recipes");
+              }}
+            >
+              <ChefHat className="h-5 w-5" />
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="relative shrink-0"
+              aria-label="Favoriter"
+              aria-haspopup="dialog"
+              aria-expanded={openPanel === "favorites"}
+              onClick={() => {
+                closeStoresMenu();
+                setOpenPanel("favorites");
+              }}
+            >
+              <Heart
+                className={`h-5 w-5 ${
+                  favorites.length > 0 ? "fill-primary text-primary" : ""
+                }`}
+              />
+              {favorites.length > 0 ? (
+                <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                  {favorites.length > 99 ? "99+" : favorites.length}
+                </span>
+              ) : null}
+            </Button>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -518,10 +532,11 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
                     type="button"
                     variant="ghost"
                     size="sm"
-                    disabled={!storesFiltered}
-                    onClick={() => setSelectedChains(ALL_CHAIN_IDS)}
+                    onClick={() =>
+                      setSelectedChains(storesFiltered ? ALL_CHAIN_IDS : [])
+                    }
                   >
-                    Välj alla
+                    {storesFiltered ? "Välj alla" : "Avmarkera alla"}
                   </Button>
                 </div>
                 <div className="max-h-[min(32rem,70vh)] space-y-2 overflow-y-auto">
@@ -533,28 +548,19 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
                     return (
                       <div
                         key={chain.id}
-                        className={`rounded-lg border p-3 transition ${
-                          selected ? "bg-background" : "opacity-60"
-                        }`}
+                        className="rounded-lg border bg-background p-3"
                       >
-                        <div className="flex items-start gap-3">
-                          <button
-                            type="button"
-                            role="checkbox"
-                            aria-checked={selected}
+                        <div className="flex items-center gap-3">
+                          <Switch
+                            id={`chain-${chain.id}`}
+                            checked={selected}
                             aria-label={`${selected ? "Dölj" : "Visa"} ${chain.name}`}
-                            className="flex min-w-0 flex-1 items-start gap-3 text-left"
-                            onClick={() => toggleChain(chain.id)}
+                            onCheckedChange={() => toggleChain(chain.id)}
+                          />
+                          <label
+                            htmlFor={`chain-${chain.id}`}
+                            className="flex min-w-0 flex-1 cursor-pointer items-start gap-3 text-left"
                           >
-                            <span
-                              className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border ${
-                                selected
-                                  ? "border-primary bg-primary text-primary-foreground"
-                                  : "border-input bg-background"
-                              }`}
-                            >
-                              {selected ? <Check className="h-3.5 w-3.5" /> : null}
-                            </span>
                             <span className="min-w-0 flex-1">
                               <span
                                 className="flex items-center gap-1.5 font-medium"
@@ -577,7 +583,7 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
                                 </span>
                               ) : null}
                             </span>
-                          </button>
+                          </label>
                           <Button
                             type="button"
                             variant={picking ? "secondary" : "outline"}
@@ -695,82 +701,74 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
           </Select>
       </div>
 
-      <Tabs
-        value={section}
-        onValueChange={(value) => setSection(value as "recipes" | "deals")}
-      >
-        <TabsList className="grid h-11 w-full grid-cols-2">
-          <TabsTrigger value="recipes" className="gap-2">
-            <ChefHat className="h-4 w-4" />
-            Receptförslag
-          </TabsTrigger>
-          <TabsTrigger value="deals" className="gap-2">
-            <ShoppingBag className="h-4 w-4" />
-            Erbjudanden
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="recipes" className="mt-4">
-          <RecipeIdeas deals={recipePool} dealsLoading={loading} storeKey={recipeStoreKey} />
-        </TabsContent>
-
-        <TabsContent value="deals" className="mt-4 space-y-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="relative min-w-[12rem] flex-1 sm:max-w-sm">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                className="pl-9"
-                placeholder="Sök vara, t.ex. kyckling"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                aria-label="Sök vara"
-              />
-            </div>
-            <p className="text-sm text-muted-foreground">
-              Visar {filteredDeals.length} av {deals.length} erbjudanden
-            </p>
+      <div className="space-y-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative min-w-[12rem] flex-1 sm:max-w-sm">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              className="pl-9"
+              placeholder="Sök vara, t.ex. kyckling"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              aria-label="Sök vara"
+            />
           </div>
+          <p className="text-sm text-muted-foreground">
+            Visar {filteredDeals.length} av {deals.length} erbjudanden
+          </p>
+        </div>
 
-          <Tabs value={category} onValueChange={(v) => setCategory(v as DealCategory)}>
-            <ScrollArea className="w-full whitespace-nowrap">
-              <TabsList className="inline-flex h-auto w-max flex-wrap justify-start gap-1 bg-transparent p-0">
-                {DEAL_CATEGORIES.map((cat) => (
-                  <TabsTrigger
-                    key={cat}
-                    value={cat}
-                    className="border data-[state=active]:border-primary data-[state=active]:bg-primary/10"
-                  >
-                    {cat}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </ScrollArea>
-            <TabsContent value={category} className="mt-4">
-              {loading ? (
-                <DealGridSkeleton />
-              ) : filteredDeals.length === 0 ? (
-                <EmptyState
-                  search={search}
-                  category={category}
-                  filtersActive={filtersActive}
+        <ScrollArea className="w-full whitespace-nowrap">
+          <div
+            className="inline-flex h-auto w-max flex-wrap justify-start gap-1"
+            role="tablist"
+            aria-label="Kategori"
+          >
+            {DEAL_CATEGORIES.map((cat) => {
+              const selected = category === cat;
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  onClick={() => setCategory(cat)}
+                  className={`inline-flex items-center justify-center whitespace-nowrap rounded-sm border px-3 py-1.5 text-sm font-medium transition-all ${
+                    selected
+                      ? "border-primary bg-primary/10 text-foreground"
+                      : "border-border bg-background text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  {cat}
+                </button>
+              );
+            })}
+          </div>
+        </ScrollArea>
+        <div>
+          {loading ? (
+            <DealGridSkeleton />
+          ) : filteredDeals.length === 0 ? (
+            <EmptyState
+              search={search}
+              category={category}
+              filtersActive={filtersActive}
+            />
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {filteredDeals.map((deal) => (
+                <DealCard
+                  key={deal.id}
+                  deal={deal}
+                  favorited={favoriteIds.has(deal.id)}
+                  onToggleFavorite={toggleFavorite}
+                  storeUrl={storeOffersUrl(deal.chain, selection[deal.chain]) ?? deal.productUrl}
                 />
-              ) : (
-                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {filteredDeals.map((deal) => (
-                    <DealCard
-                      key={deal.id}
-                      deal={deal}
-                      favorited={favoriteIds.has(deal.id)}
-                      onToggleFavorite={toggleFavorite}
-                      storeUrl={storeOffersUrl(deal.chain, selection[deal.chain]) ?? deal.productUrl}
-                    />
-                  ))}
-                </div>
-              )}
-            </TabsContent>
-          </Tabs>
-        </TabsContent>
-      </Tabs>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
 
       {mapOpen && (
         <LocationPicker
@@ -781,13 +779,22 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
         />
       )}
 
-      {favoritesOpen && (
+      {openPanel === "favorites" && (
         <FavoritesPanel
           groups={favoriteGroups}
           selection={selection}
           currentDealIds={new Set(deals.map((deal) => deal.id))}
-          onClose={() => setFavoritesOpen(false)}
+          onClose={() => setOpenPanel(null)}
           onToggleFavorite={toggleFavorite}
+        />
+      )}
+
+      {openPanel === "recipes" && (
+        <RecipesPanel
+          deals={recipePool}
+          dealsLoading={loading}
+          storeKey={recipeStoreKey}
+          onClose={() => setOpenPanel(null)}
         />
       )}
     </div>

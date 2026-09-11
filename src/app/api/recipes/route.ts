@@ -159,7 +159,7 @@ function recipeCacheKey(proteins: RecipeIngredient[], vegetables: RecipeIngredie
     .sort()
     .join("|");
   const digest = createHash("sha256").update(ids).digest("hex").slice(0, 32);
-  return `recipes:v2:${digest}`;
+  return `recipes:v3:${digest}`;
 }
 
 async function readCachedRecipes(key: string): Promise<RecipesResponse | null> {

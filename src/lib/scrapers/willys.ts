@@ -4,6 +4,9 @@ import { storeOffersUrl } from "../chains";
 import { fetchJson } from "../http";
 import {
   calcSavingsPercent,
+  formatKrPerKg,
+  formatSek,
+  kilosFromVolume,
   parseLowestHistoricalPrice,
   parseSwedishPrice,
   slugify,
@@ -96,10 +99,13 @@ export async function scrapeWillys(storeId: string): Promise<ScraperResult> {
   );
 
   const deals: Deal[] = [];
+  const seen = new Set<string>();
   const storeUrl = store.url ?? storeOffersUrl("willys", storeId) ?? `${BASE}/erbjudanden`;
   for (const item of data.results ?? []) {
     const deal = parseAxfoodCampaignItem(item, "willys", storeUrl);
-    if (deal) deals.push(deal);
+    if (!deal || seen.has(deal.id)) continue;
+    seen.add(deal.id);
+    deals.push(deal);
   }
 
   return { store, deals };
@@ -111,8 +117,7 @@ export function parseAxfoodCampaignItem(
   storeUrl: string,
 ): Deal | null {
   const promo = item.potentialPromotions?.[0];
-  const nameParts = [item.name, promo?.description, item.manufacturer].filter(Boolean);
-  const name = nameParts.join(" ").trim();
+  const name = item.name?.trim() ?? "";
   if (!name) return null;
 
   const shelfPrice = parseSwedishPrice(item.price) ?? item.priceValue;
@@ -159,7 +164,6 @@ export function parseAxfoodCampaignItem(
   if (price <= 0) return null;
 
   const productCode = promo?.mainProductCode || item.code;
-  const rawCategory = promo?.name ?? item.name;
 
   return {
     id: `${chain}-${slugify(name)}-${productCode ?? dealsFallbackId(name, price)}`,
@@ -171,14 +175,32 @@ export function parseAxfoodCampaignItem(
     originalPrice,
     savingsPercent: calcSavingsPercent(price, originalPrice),
     promotionLabel: promotionLabel || undefined,
+    comparisonPrice: axfoodComparisonPrice(price, item.priceUnit, item.displayVolume),
     memberOnly,
-    category: categorizeDeal(name, rawCategory),
+    category: categorizeDeal(name),
     imageUrl: item.image?.url,
     productUrl: storeUrl,
     validTo: promo?.endDate,
     validFrom: promo?.startDate,
-    rawCategory,
   };
+}
+
+function axfoodComparisonPrice(
+  price: number,
+  priceUnit?: string,
+  volume?: string,
+): string | undefined {
+  if (!priceUnit) return undefined;
+  const unit = priceUnit.replace(/\s+/g, "").toLowerCase();
+  if (unit === "kr/kg" || unit === "kr/hg" || unit === "kr/l") {
+    return `${formatSek(price)}/${unit.slice(3)}`;
+  }
+  if (unit === "kr/st") {
+    const kilos = kilosFromVolume(volume);
+    if (kilos && kilos > 0) return formatKrPerKg(price / kilos);
+    return `${formatSek(price)}/st`;
+  }
+  return undefined;
 }
 
 function dealsFallbackId(name: string, price: number): string {

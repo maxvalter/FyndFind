@@ -60,10 +60,13 @@ export async function scrapeHemkop(storeId: string): Promise<ScraperResult> {
   );
 
   const deals: Deal[] = [];
+  const seen = new Set<string>();
   const storeUrl = store.url ?? storeOffersUrl("hemkop", storeId) ?? `${BASE}/erbjudanden`;
   for (const item of data.results ?? []) {
     const deal = parseAxfoodCampaignItem(item, "hemkop", storeUrl);
-    if (deal) deals.push(deal);
+    if (!deal || seen.has(deal.id)) continue;
+    seen.add(deal.id);
+    deals.push(deal);
   }
 
   return { store, deals };

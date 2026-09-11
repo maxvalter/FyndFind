@@ -146,6 +146,15 @@ async function getBackend(): Promise<KvLike> {
 }
 
 async function resolveBackend(): Promise<KvLike> {
+  if (process.env.FYND_LOCAL === "1") {
+    try {
+      await mkdir(DATA_DIR, { recursive: true });
+      return fileBackend();
+    } catch {
+      return memoryBackend();
+    }
+  }
+
   const binding = await getCloudflareKvBinding();
   if (binding) return cloudflareBackend(binding);
   try {
