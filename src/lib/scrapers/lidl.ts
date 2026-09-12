@@ -355,7 +355,7 @@ function stripLidlPerKgPrefix(volume?: string): string | undefined {
   if (!volume) return undefined;
   const stripped = volume
     .replace(/^\s*\/\s*kg\s*/i, "")
-    .replace(/^\((.*)\)$/s, "$1")
+    .replace(/^\(([\s\S]*)\)$/, "$1")
     .trim();
   return stripped || undefined;
 }
