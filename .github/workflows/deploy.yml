@@ -17,8 +17,72 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Build and deploy
-        run: npx opennextjs-cloudflare deploy
+
+      - name: Resolve Cloudflare account
+        id: cf
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "CLOUDFLARE_API_TOKEN saknas i GitHub Secrets." >&2
+            exit 1
+          fi
+          ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-}"
+          if [ -z "$ACCOUNT_ID" ]; then
+            ACCOUNT_ID=$(curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts?per_page=2" \
+              | jq -r '.result[0].id // empty')
+          fi
+          if [ -z "$ACCOUNT_ID" ]; then
+            echo "Kunde inte slå upp Cloudflare Account ID från token." >&2
+            exit 1
+          fi
+          echo "account_id=$ACCOUNT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure DEALS_KV namespace
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.cf.outputs.account_id }}
+        run: |
+          set -euo pipefail
+          TITLE="veckans-fynd-DEALS_KV"
+          RESP=$(curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces?per_page=1000")
+          ID=$(echo "$RESP" | jq -r --arg t "$TITLE" --arg t2 "DEALS_KV" \
+            '.result[]? | select(.title==$t or .title==$t2) | .id' | head -n1)
+          if [ -z "${ID:-}" ] || [ "$ID" = "null" ]; then
+            ID=$(curl -sS -X POST \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "{\"title\":\"$TITLE\"}" \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces" \
+              | jq -r '.result.id // empty')
+          fi
+          if [ -z "${ID:-}" ] || [ "$ID" = "null" ]; then
+            echo "Kunde inte skapa eller hitta KV-namespace DEALS_KV" >&2
+            echo "$RESP" >&2
+            exit 1
+          fi
+          export ID
+          node -e '
+            const fs = require("fs");
+            const id = process.env.ID;
+            const path = "wrangler.jsonc";
+            let text = fs.readFileSync(path, "utf8");
+            if (!/"id"\s*:/.test(text)) {
+              text = text.replace(
+                /("binding": "DEALS_KV")/,
+                `$1,\n      "id": "${id}"`
+              );
+              fs.writeFileSync(path, text);
+            }
+            console.log("DEALS_KV", id);
+          '
+
+      - name: Build and deploy
+        run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.cf.outputs.account_id }}
