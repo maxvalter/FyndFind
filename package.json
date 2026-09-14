@@ -11,8 +11,8 @@
     "start": "next start --port 4371 --hostname 0.0.0.0",
     "lint": "eslint",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
-    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
-    "upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy -- --keep-vars",
+    "upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload -- --keep-vars",
     "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
   },
   "dependencies": {

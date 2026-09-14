@@ -145,15 +145,16 @@ Appen körs som en **Cloudflare Worker** via OpenNext. Push till `main` kan depl
 4. I GitHub: **Settings → Secrets and variables → Actions**, lägg till:
    - `CLOUDFLARE_API_TOKEN`
    - `CLOUDFLARE_ACCOUNT_ID`
+   - `LLM_API_KEY` (sätts på workern vid varje deploy — behöver inte bytas i Cloudflare-dashboarden)
 5. Pusha till `main` (eller kör workflow **Deploy to Cloudflare** manuellt).
 
 Adressen blir ungefär `https://veckans-fynd.<ditt-subdomän>.workers.dev`.
 
-Efter första deployen, sätt runtime-hemligheter i Cloudflare (Workers → veckans-fynd → Settings → Variables):
+Deploy bevarar dashboard-variabler (`keep_vars` / `--keep-vars`) och skriver `LLM_API_KEY` som Worker-secret från GitHub. Övriga runtime-värden kan ligga kvar i Cloudflare (Workers → veckans-fynd → Settings → Variables):
 
 | Namn | Syfte |
 |------|--------|
-| `LLM_API_KEY` | Receptförslag |
+| `LLM_API_KEY` | Receptförslag (sätts från GitHub Secret) |
 | `LLM_BASE_URL` | Valfritt, t.ex. Groq |
 | `LLM_MODEL` | Valfritt |
 | `CRON_SECRET` | Skyddar `GET /api/cron/refresh` |

@@ -11,6 +11,8 @@
   "observability": {
     "enabled": true
   },
+  // Preserve dashboard/runtime vars such as LLM_API_KEY across deploys.
+  "keep_vars": true,
   "services": [
     {
       "binding": "WORKER_SELF_REFERENCE",
