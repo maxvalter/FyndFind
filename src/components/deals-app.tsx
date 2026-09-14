@@ -4,7 +4,13 @@ import { LocationPicker } from "@/components/location-picker";
 import { RecipesPanel } from "@/components/recipe-ideas";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -16,7 +22,13 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { CHAINS, getChainMeta, storeOffersUrl, type ChainMeta } from "@/lib/chains";
+import {
+  CHAINS,
+  getChainMeta,
+  storeOffersUrl,
+  type ChainMeta,
+} from "@/lib/chains";
+import { readDismissedDealIds, writeDismissedDealIds } from "@/lib/dismissed";
 import {
   readFavoriteDeals,
   refreshFavoriteDeals,
@@ -59,6 +71,8 @@ import {
   RefreshCw,
   Search,
   Store,
+  Trash2,
+  Undo2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -86,10 +100,28 @@ const closedStoreSearch: StoreSearchState = {
   loading: false,
 };
 
-interface FavoriteGroup {
+interface DealGroup {
   chain: ChainMeta;
   storeName: string;
   items: Deal[];
+}
+
+function groupDealsByChain(
+  items: Deal[],
+  statuses: ChainStatus[],
+): DealGroup[] {
+  return CHAINS.map((chain) => {
+    const groupItems = items
+      .filter((deal) => deal.chain === chain.id)
+      .sort((a, b) => a.name.localeCompare(b.name, "sv"));
+    if (groupItems.length === 0) return null;
+    const status = statuses.find((entry) => entry.chain === chain.id);
+    return {
+      chain,
+      storeName: status?.storeName ?? chain.name,
+      items: groupItems,
+    };
+  }).filter((group): group is DealGroup => group != null);
 }
 
 function storeCountLabel(count: number) {
@@ -100,7 +132,11 @@ function discountLevelLabel(value: MinDiscount) {
   return value === 0 ? "Alla rabatter" : `${value} %+`;
 }
 
-export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: DealsAppProps) {
+export function DealsApp({
+  initialSelection,
+  hasSavedStores,
+  initialPlace,
+}: DealsAppProps) {
   const [selection, setSelection] = useState<StoreSelection>(initialSelection);
   const [place, setPlace] = useState<SavedPlace | null>(initialPlace);
   const [mapOpen, setMapOpen] = useState(false);
@@ -112,7 +148,8 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<DealCategory>("Alla");
-  const [selectedChains, setSelectedChains] = useState<ChainId[]>(ALL_CHAIN_IDS);
+  const [selectedChains, setSelectedChains] =
+    useState<ChainId[]>(ALL_CHAIN_IDS);
   const [minDiscount, setMinDiscount] = useState<MinDiscount>(0);
   const [storesOpen, setStoresOpen] = useState(false);
   const storesMenuRef = useRef<HTMLDivElement>(null);
@@ -125,12 +162,18 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
   });
   const [favorites, setFavorites] = useState<Deal[]>([]);
   const [favoritesReady, setFavoritesReady] = useState(false);
-  const [openPanel, setOpenPanel] = useState<"favorites" | "recipes" | null>(null);
+  const [dismissedIds, setDismissedIds] = useState<string[]>([]);
+  const [dismissedReady, setDismissedReady] = useState(false);
+  const [openPanel, setOpenPanel] = useState<
+    "favorites" | "recipes" | "dismissed" | null
+  >(null);
   const dealsRequestId = useRef(0);
 
   useEffect(() => {
     setFavorites(readFavoriteDeals());
+    setDismissedIds(readDismissedDealIds());
     setFavoritesReady(true);
+    setDismissedReady(true);
   }, []);
 
   useEffect(() => {
@@ -138,7 +181,16 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
     writeFavoriteDeals(favorites);
   }, [favorites, favoritesReady]);
 
-  const favoriteIds = useMemo(() => new Set(favorites.map((deal) => deal.id)), [favorites]);
+  useEffect(() => {
+    if (!dismissedReady) return;
+    writeDismissedDealIds(dismissedIds);
+  }, [dismissedIds, dismissedReady]);
+
+  const favoriteIds = useMemo(
+    () => new Set(favorites.map((deal) => deal.id)),
+    [favorites],
+  );
+  const dismissedIdSet = useMemo(() => new Set(dismissedIds), [dismissedIds]);
 
   const toggleFavorite = useCallback((deal: Deal) => {
     setFavorites((prev) =>
@@ -148,26 +200,44 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
     );
   }, []);
 
-  const fetchDeals = useCallback(async (sel: StoreSelection, refresh = false) => {
-    const requestId = ++dealsRequestId.current;
-    const params = new URLSearchParams({
-      willys: sel.willys ?? DEFAULT_STORES.willys!,
-      hemkop: sel.hemkop ?? DEFAULT_STORES.hemkop!,
-      ica: sel.ica ?? DEFAULT_STORES.ica!,
-      coop: sel.coop ?? DEFAULT_STORES.coop!,
-      lidl: sel.lidl ?? DEFAULT_STORES.lidl!,
-    });
-    if (refresh) params.set("refresh", "1");
-
-    const response = await fetch(`/api/deals?${params.toString()}`);
-    if (!response.ok) throw new Error("Kunde inte hämta erbjudanden");
-    const data = (await response.json()) as DealsResponse;
-    if (requestId !== dealsRequestId.current) return;
-    setDeals(data.deals);
-    setStatuses(data.statuses);
-    setFetchedAt(data.fetchedAt);
-    setFavorites((prev) => refreshFavoriteDeals(prev, data.deals));
+  const dismissDeal = useCallback((deal: Deal) => {
+    setDismissedIds((prev) =>
+      prev.includes(deal.id) ? prev : [...prev, deal.id],
+    );
+    setFavorites((prev) => prev.filter((item) => item.id !== deal.id));
   }, []);
+
+  const restoreDeal = useCallback((deal: Deal) => {
+    setDismissedIds((prev) => prev.filter((id) => id !== deal.id));
+  }, []);
+
+  const clearDismissed = useCallback(() => {
+    setDismissedIds([]);
+  }, []);
+
+  const fetchDeals = useCallback(
+    async (sel: StoreSelection, refresh = false) => {
+      const requestId = ++dealsRequestId.current;
+      const params = new URLSearchParams({
+        willys: sel.willys ?? DEFAULT_STORES.willys!,
+        hemkop: sel.hemkop ?? DEFAULT_STORES.hemkop!,
+        ica: sel.ica ?? DEFAULT_STORES.ica!,
+        coop: sel.coop ?? DEFAULT_STORES.coop!,
+        lidl: sel.lidl ?? DEFAULT_STORES.lidl!,
+      });
+      if (refresh) params.set("refresh", "1");
+
+      const response = await fetch(`/api/deals?${params.toString()}`);
+      if (!response.ok) throw new Error("Kunde inte hämta erbjudanden");
+      const data = (await response.json()) as DealsResponse;
+      if (requestId !== dealsRequestId.current) return;
+      setDeals(data.deals);
+      setStatuses(data.statuses);
+      setFetchedAt(data.fetchedAt);
+      setFavorites((prev) => refreshFavoriteDeals(prev, data.deals));
+    },
+    [],
+  );
 
   const loadDeals = useCallback(
     async (sel: StoreSelection, refresh = false) => {
@@ -197,22 +267,32 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
     void loadDeals(selection);
   }, [selection, loadDeals]);
 
+  const visibleDeals = useMemo(
+    () => deals.filter((deal) => !dismissedIdSet.has(deal.id)),
+    [deals, dismissedIdSet],
+  );
+
+  const dismissedDeals = useMemo(
+    () => deals.filter((deal) => dismissedIdSet.has(deal.id)),
+    [deals, dismissedIdSet],
+  );
+
   const filteredDeals = useMemo(
     () =>
-      filterDeals(deals, search, category, {
+      filterDeals(visibleDeals, search, category, {
         chains: selectedChains,
         minDiscount,
       }),
-    [deals, search, category, selectedChains, minDiscount],
+    [visibleDeals, search, category, selectedChains, minDiscount],
   );
 
   const recipePool = useMemo(
     () =>
-      filterDeals(deals, "", "Alla", {
+      filterDeals(visibleDeals, "", "Alla", {
         chains: selectedChains,
         minDiscount,
       }),
-    [deals, selectedChains, minDiscount],
+    [visibleDeals, selectedChains, minDiscount],
   );
 
   const recipeStoreKey = useMemo(
@@ -257,17 +337,19 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
 
   const toggleChain = (chain: ChainId) => {
     setSelectedChains((prev) =>
-      prev.includes(chain) ? prev.filter((id) => id !== chain) : [...prev, chain],
+      prev.includes(chain)
+        ? prev.filter((id) => id !== chain)
+        : [...prev, chain],
     );
   };
 
   const dealCountByChain = useMemo(() => {
     const counts: Partial<Record<ChainId, number>> = {};
-    for (const deal of deals) {
+    for (const deal of visibleDeals) {
       counts[deal.chain] = (counts[deal.chain] ?? 0) + 1;
     }
     return counts;
-  }, [deals]);
+  }, [visibleDeals]);
 
   const applyNearest = useCallback(async (url: string) => {
     const res = await fetch(url);
@@ -356,7 +438,14 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
     const query = place?.label ?? "";
     setStoresOpen(true);
     if (query) void searchStores(chain, query);
-    else setStoreSearch({ open: true, chain, query: "", results: [], loading: false });
+    else
+      setStoreSearch({
+        open: true,
+        chain,
+        query: "",
+        results: [],
+        loading: false,
+      });
   };
 
   const confirmMapPlace = async (picked: SavedPlace) => {
@@ -382,40 +471,30 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
     const next = { ...selection, [chain]: store.id };
     setSelection(next);
     persistSelection(next);
-    setSelectedChains((prev) => (prev.includes(chain) ? prev : [...prev, chain]));
+    setSelectedChains((prev) =>
+      prev.includes(chain) ? prev : [...prev, chain],
+    );
     setStoreSearch(closedStoreSearch);
   };
 
-  const favoriteGroups = useMemo(() => {
-    return CHAINS.map((chain) => {
-      const items = favorites
-        .filter((deal) => deal.chain === chain.id)
-        .sort((a, b) => a.name.localeCompare(b.name, "sv"));
-      if (items.length === 0) return null;
-      const status = statuses.find((entry) => entry.chain === chain.id);
-      return {
-        chain,
-        storeName: status?.storeName ?? chain.name,
-        items,
-      };
-    }).filter((group): group is FavoriteGroup => group != null);
-  }, [favorites, statuses]);
+  const favoriteGroups = useMemo(
+    () => groupDealsByChain(favorites, statuses),
+    [favorites, statuses],
+  );
+
+  const dismissedGroups = useMemo(
+    () => groupDealsByChain(dismissedDeals, statuses),
+    [dismissedDeals, statuses],
+  );
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-4 py-6">
       <header className="space-y-4">
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-1">
-            <h1 className="text-3xl font-bold tracking-tight">Veckans fynd</h1>
-            {fetchedAt && (
-              <p className="text-xs text-muted-foreground">
-                Senast uppdaterad:{" "}
-                {new Date(fetchedAt).toLocaleString("sv-SE", {
-                  dateStyle: "short",
-                  timeStyle: "short",
-                })}
-              </p>
-            )}
+            <h1 className="font-display text-3xl font-extrabold tracking-tight">
+              Veckans fynd
+            </h1>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <Button
@@ -476,7 +555,9 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
               <MapPin className="h-4 w-4" />
             )}
             <span className="max-w-[10rem] truncate">
-              {locating ? "Hittar plats…" : place?.label ?? "Använd min plats"}
+              {locating
+                ? "Hittar plats…"
+                : (place?.label ?? "Använd min plats")}
             </span>
             {(place || hasSavedStores) && !locating ? (
               <ChevronDown className="h-4 w-4 opacity-60" />
@@ -494,211 +575,228 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
             )}
             Uppdatera
           </Button>
+          {fetchedAt && (
+            <p className="text-xs text-muted-foreground">
+              Senast uppdaterad:{" "}
+              {new Date(fetchedAt).toLocaleString("sv-SE", {
+                dateStyle: "short",
+                timeStyle: "short",
+              })}
+            </p>
+          )}
         </div>
       </header>
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative" ref={storesMenuRef}>
-            <Button
-              type="button"
-              variant="outline"
-              aria-haspopup="dialog"
-              aria-expanded={storesOpen}
-              aria-label="Välj butiker"
-              className={`min-w-[11.5rem] justify-between font-normal ${
-                storesFiltered || storesOpen
-                  ? "border-primary ring-2 ring-primary/20"
-                  : ""
-              }`}
-              onClick={() => (storesOpen ? closeStoresMenu() : setStoresOpen(true))}
+          <Button
+            type="button"
+            variant="outline"
+            aria-haspopup="dialog"
+            aria-expanded={storesOpen}
+            aria-label="Välj butiker"
+            className={`min-w-[11.5rem] justify-between font-normal ${
+              storesFiltered || storesOpen
+                ? "border-primary ring-2 ring-primary/20"
+                : ""
+            }`}
+            onClick={() =>
+              storesOpen ? closeStoresMenu() : setStoresOpen(true)
+            }
+          >
+            <span className="flex items-center gap-2">
+              <Store className="h-4 w-4" />
+              {storeCountLabel(selectedChains.length)}
+            </span>
+            <ChevronDown className="h-4 w-4 opacity-60" />
+          </Button>
+          {storesOpen && (
+            <div
+              role="dialog"
+              aria-label="Butiker"
+              className="absolute left-0 z-50 mt-2 w-[min(28rem,calc(100vw-2rem))] rounded-xl border bg-popover p-3 text-popover-foreground shadow-lg"
             >
-              <span className="flex items-center gap-2">
-                <Store className="h-4 w-4" />
-                {storeCountLabel(selectedChains.length)}
-              </span>
-              <ChevronDown className="h-4 w-4 opacity-60" />
-            </Button>
-            {storesOpen && (
-              <div
-                role="dialog"
-                aria-label="Butiker"
-                className="absolute left-0 z-50 mt-2 w-[min(28rem,calc(100vw-2rem))] rounded-xl border bg-popover p-3 text-popover-foreground shadow-lg"
-              >
-                <div className="mb-2 flex items-center justify-between gap-2 px-1">
-                  <p className="text-sm font-semibold">
-                    {storeCountLabel(selectedChains.length)} valda
-                  </p>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      setSelectedChains(storesFiltered ? ALL_CHAIN_IDS : [])
-                    }
-                  >
-                    {storesFiltered ? "Välj alla" : "Avmarkera alla"}
-                  </Button>
-                </div>
-                <div className="max-h-[min(32rem,70vh)] space-y-2 overflow-y-auto">
-                  {CHAINS.map((chain) => {
-                    const selected = selectedChains.includes(chain.id);
-                    const status = statuses.find((s) => s.chain === chain.id);
-                    const count = dealCountByChain[chain.id] ?? status?.dealCount ?? 0;
-                    const picking = storeSearch.chain === chain.id;
-                    return (
-                      <div
-                        key={chain.id}
-                        className="rounded-lg border bg-background p-3"
-                      >
-                        <div className="flex items-center gap-3">
-                          <Switch
-                            id={`chain-${chain.id}`}
-                            checked={selected}
-                            aria-label={`${selected ? "Dölj" : "Visa"} ${chain.name}`}
-                            onCheckedChange={() => toggleChain(chain.id)}
-                          />
-                          <label
-                            htmlFor={`chain-${chain.id}`}
-                            className="flex min-w-0 flex-1 cursor-pointer items-start gap-3 text-left"
-                          >
-                            <span className="min-w-0 flex-1">
-                              <span
-                                className="flex items-center gap-1.5 font-medium"
-                                style={{ color: chain.color }}
-                              >
-                                {chain.name}
-                                {status && !status.ok ? (
-                                  <AlertCircle className="h-3.5 w-3.5 text-destructive" />
-                                ) : null}
-                              </span>
-                              <span className="mt-0.5 block truncate text-sm text-muted-foreground">
-                                {status?.storeName ?? "Ingen butik vald"}
-                              </span>
-                              <span className="mt-0.5 block text-xs text-muted-foreground">
-                                {count} erbjudanden
-                              </span>
-                              {status?.error ? (
-                                <span className="mt-1 block text-xs text-destructive">
-                                  {status.error}
-                                </span>
+              <div className="mb-2 flex items-center justify-between gap-2 px-1">
+                <p className="text-sm font-semibold">
+                  {storeCountLabel(selectedChains.length)} valda
+                </p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    setSelectedChains(storesFiltered ? ALL_CHAIN_IDS : [])
+                  }
+                >
+                  {storesFiltered ? "Välj alla" : "Avmarkera alla"}
+                </Button>
+              </div>
+              <div className="max-h-[min(32rem,70vh)] space-y-2 overflow-y-auto">
+                {CHAINS.map((chain) => {
+                  const selected = selectedChains.includes(chain.id);
+                  const status = statuses.find((s) => s.chain === chain.id);
+                  const count =
+                    dealCountByChain[chain.id] ?? status?.dealCount ?? 0;
+                  const picking = storeSearch.chain === chain.id;
+                  return (
+                    <div
+                      key={chain.id}
+                      className="rounded-lg border bg-background p-3"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Switch
+                          id={`chain-${chain.id}`}
+                          checked={selected}
+                          aria-label={`${selected ? "Dölj" : "Visa"} ${chain.name}`}
+                          onCheckedChange={() => toggleChain(chain.id)}
+                        />
+                        <label
+                          htmlFor={`chain-${chain.id}`}
+                          className="flex min-w-0 flex-1 cursor-pointer items-start gap-3 text-left"
+                        >
+                          <span className="min-w-0 flex-1">
+                            <span
+                              className="flex items-center gap-1.5 font-medium"
+                              style={{ color: chain.color }}
+                            >
+                              {chain.name}
+                              {status && !status.ok ? (
+                                <AlertCircle className="h-3.5 w-3.5 text-destructive" />
                               ) : null}
                             </span>
-                          </label>
-                          <Button
-                            type="button"
-                            variant={picking ? "secondary" : "outline"}
-                            size="sm"
-                            className="shrink-0"
-                            onClick={() =>
-                              picking
-                                ? setStoreSearch(closedStoreSearch)
-                                : openStorePicker(chain.id)
-                            }
-                          >
-                            {picking ? "Stäng" : "Byt butik"}
-                          </Button>
-                        </div>
-                        {picking && (
-                          <div className="mt-3 space-y-2 border-t pt-3">
-                            <p className="text-xs text-muted-foreground">
-                              Sök på stad, område eller butiksnamn
-                            </p>
-                            <div className="flex gap-2">
-                              <Input
-                                autoFocus
-                                placeholder="t.ex. Fridhemsplan, Göteborg..."
-                                value={storeSearch.query}
-                                onChange={(e) =>
-                                  setStoreSearch((s) => ({
-                                    ...s,
-                                    query: e.target.value,
-                                  }))
-                                }
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") {
-                                    e.preventDefault();
-                                    void searchStores(chain.id, storeSearch.query);
-                                  }
-                                }}
-                              />
-                              <Button
-                                type="button"
-                                onClick={() =>
-                                  void searchStores(chain.id, storeSearch.query)
-                                }
-                              >
-                                Sök
-                              </Button>
-                            </div>
-                            {storeSearch.loading && (
-                              <Skeleton className="h-16 w-full" />
-                            )}
-                            <div className="max-h-48 space-y-1.5 overflow-y-auto">
-                              {storeSearch.results.map((store) => (
-                                <button
-                                  key={`${store.chain}-${store.id}`}
-                                  type="button"
-                                  className="flex w-full items-start justify-between gap-3 rounded-md border px-3 py-2 text-left hover:bg-muted/50"
-                                  onClick={() => selectStore(chain.id, store)}
-                                >
-                                  <span>
-                                    <span className="block text-sm font-medium">
-                                      {store.name}
-                                    </span>
-                                    <span className="block text-xs text-muted-foreground">
-                                      {[store.address, store.city]
-                                        .filter(Boolean)
-                                        .join(", ")}
-                                    </span>
-                                  </span>
-                                  {store.distanceKm != null && (
-                                    <span className="shrink-0 text-xs text-muted-foreground">
-                                      {formatDistance(store.distanceKm)}
-                                    </span>
-                                  )}
-                                </button>
-                              ))}
-                              {!storeSearch.loading &&
-                                storeSearch.results.length === 0 &&
-                                storeSearch.query && (
-                                  <p className="px-1 text-sm text-muted-foreground">
-                                    Inga butiker hittades.
-                                  </p>
-                                )}
-                            </div>
-                          </div>
-                        )}
+                            <span className="mt-0.5 block truncate text-sm text-muted-foreground">
+                              {status?.storeName ?? "Ingen butik vald"}
+                            </span>
+                            <span className="mt-0.5 block text-xs text-muted-foreground">
+                              {count} erbjudanden
+                            </span>
+                            {status?.error ? (
+                              <span className="mt-1 block text-xs text-destructive">
+                                {status.error}
+                              </span>
+                            ) : null}
+                          </span>
+                        </label>
+                        <Button
+                          type="button"
+                          variant={picking ? "secondary" : "outline"}
+                          size="sm"
+                          className="shrink-0"
+                          onClick={() =>
+                            picking
+                              ? setStoreSearch(closedStoreSearch)
+                              : openStorePicker(chain.id)
+                          }
+                        >
+                          {picking ? "Stäng" : "Byt butik"}
+                        </Button>
                       </div>
-                    );
-                  })}
-                </div>
+                      {picking && (
+                        <div className="mt-3 space-y-2 border-t pt-3">
+                          <p className="text-xs text-muted-foreground">
+                            Sök på stad, område eller butiksnamn
+                          </p>
+                          <div className="flex gap-2">
+                            <Input
+                              autoFocus
+                              placeholder="t.ex. Fridhemsplan, Göteborg..."
+                              value={storeSearch.query}
+                              onChange={(e) =>
+                                setStoreSearch((s) => ({
+                                  ...s,
+                                  query: e.target.value,
+                                }))
+                              }
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  void searchStores(
+                                    chain.id,
+                                    storeSearch.query,
+                                  );
+                                }
+                              }}
+                            />
+                            <Button
+                              type="button"
+                              onClick={() =>
+                                void searchStores(chain.id, storeSearch.query)
+                              }
+                            >
+                              Sök
+                            </Button>
+                          </div>
+                          {storeSearch.loading && (
+                            <Skeleton className="h-16 w-full" />
+                          )}
+                          <div className="max-h-48 space-y-1.5 overflow-y-auto">
+                            {storeSearch.results.map((store) => (
+                              <button
+                                key={`${store.chain}-${store.id}`}
+                                type="button"
+                                className="flex w-full items-start justify-between gap-3 rounded-md border px-3 py-2 text-left hover:bg-muted/50"
+                                onClick={() => selectStore(chain.id, store)}
+                              >
+                                <span>
+                                  <span className="block text-sm font-medium">
+                                    {store.name}
+                                  </span>
+                                  <span className="block text-xs text-muted-foreground">
+                                    {[store.address, store.city]
+                                      .filter(Boolean)
+                                      .join(", ")}
+                                  </span>
+                                </span>
+                                {store.distanceKm != null && (
+                                  <span className="shrink-0 text-xs text-muted-foreground">
+                                    {formatDistance(store.distanceKm)}
+                                  </span>
+                                )}
+                              </button>
+                            ))}
+                            {!storeSearch.loading &&
+                              storeSearch.results.length === 0 &&
+                              storeSearch.query && (
+                                <p className="px-1 text-sm text-muted-foreground">
+                                  Inga butiker hittades.
+                                </p>
+                              )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            )}
-          </div>
+            </div>
+          )}
+        </div>
 
-          <Select
-            value={String(minDiscount)}
-            onValueChange={(value) => setMinDiscount(Number(value) as MinDiscount)}
-            onOpenChange={(open) => {
-              if (open) closeStoresMenu();
-            }}
+        <Select
+          value={String(minDiscount)}
+          onValueChange={(value) =>
+            setMinDiscount(Number(value) as MinDiscount)
+          }
+          onOpenChange={(open) => {
+            if (open) closeStoresMenu();
+          }}
+        >
+          <SelectTrigger
+            aria-label="Filtrera rabattnivå"
+            className={`w-[11.5rem] ${
+              discountFiltered ? "border-primary ring-2 ring-primary/20" : ""
+            }`}
           >
-            <SelectTrigger
-              aria-label="Filtrera rabattnivå"
-              className={`w-[11.5rem] ${
-                discountFiltered ? "border-primary ring-2 ring-primary/20" : ""
-              }`}
-            >
-              <SelectValue placeholder="Alla rabatter" />
-            </SelectTrigger>
-            <SelectContent position="popper">
-              {DISCOUNT_LEVELS.map((level) => (
-                <SelectItem key={level.value} value={String(level.value)}>
-                  {discountLevelLabel(level.value)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            <SelectValue placeholder="Alla rabatter" />
+          </SelectTrigger>
+          <SelectContent position="popper">
+            {DISCOUNT_LEVELS.map((level) => (
+              <SelectItem key={level.value} value={String(level.value)}>
+                {discountLevelLabel(level.value)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       <div className="space-y-4">
@@ -714,7 +812,26 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
             />
           </div>
           <p className="text-sm text-muted-foreground">
-            Visar {filteredDeals.length} av {deals.length} erbjudanden
+            Visar {filteredDeals.length} av {visibleDeals.length} erbjudanden
+            {dismissedDeals.length > 0 ? (
+              <>
+                {" · "}
+                <button
+                  type="button"
+                  className="text-primary hover:underline"
+                  aria-haspopup="dialog"
+                  aria-expanded={openPanel === "dismissed"}
+                  onClick={() => {
+                    closeStoresMenu();
+                    setOpenPanel("dismissed");
+                  }}
+                >
+                  {dismissedDeals.length === 1
+                    ? "1 dolt"
+                    : `${dismissedDeals.length} dolda`}
+                </button>
+              </>
+            ) : null}
           </p>
         </div>
 
@@ -746,13 +863,22 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
           </div>
         </ScrollArea>
         <div>
-          {loading ? (
+          {loading || !dismissedReady ? (
             <DealGridSkeleton />
           ) : filteredDeals.length === 0 ? (
             <EmptyState
               search={search}
               category={category}
               filtersActive={filtersActive}
+              allDismissed={visibleDeals.length === 0 && deals.length > 0}
+              onOpenDismissed={
+                dismissedDeals.length > 0
+                  ? () => {
+                      closeStoresMenu();
+                      setOpenPanel("dismissed");
+                    }
+                  : undefined
+              }
             />
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -762,7 +888,11 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
                   deal={deal}
                   favorited={favoriteIds.has(deal.id)}
                   onToggleFavorite={toggleFavorite}
-                  storeUrl={storeOffersUrl(deal.chain, selection[deal.chain]) ?? deal.productUrl}
+                  onDismiss={dismissDeal}
+                  storeUrl={
+                    storeOffersUrl(deal.chain, selection[deal.chain]) ??
+                    deal.productUrl
+                  }
                 />
               ))}
             </div>
@@ -789,6 +919,16 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
         />
       )}
 
+      {openPanel === "dismissed" && (
+        <DismissedPanel
+          groups={dismissedGroups}
+          selection={selection}
+          onClose={() => setOpenPanel(null)}
+          onRestore={restoreDeal}
+          onClearAll={clearDismissed}
+        />
+      )}
+
       {openPanel === "recipes" && (
         <RecipesPanel
           deals={recipePool}
@@ -804,7 +944,7 @@ export function DealsApp({ initialSelection, hasSavedStores, initialPlace }: Dea
 function FavoriteButton({
   favorited,
   onToggle,
-  className = "absolute right-2 top-2 z-10 bg-white/95 shadow-sm ring-1 ring-black/10 hover:bg-white",
+  className = "bg-white/95 shadow-sm ring-1 ring-black/10 hover:bg-white",
 }: {
   favorited: boolean;
   onToggle: () => void;
@@ -829,6 +969,29 @@ function FavoriteButton({
   );
 }
 
+function DismissButton({
+  onDismiss,
+  className = "bg-white/95 shadow-sm ring-1 ring-black/10 hover:bg-white",
+}: {
+  onDismiss: () => void;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label="Dölj erbjudande"
+      className={`flex h-9 w-9 items-center justify-center rounded-full text-foreground transition ${className}`}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onDismiss();
+      }}
+    >
+      <X className="h-5 w-5 text-muted-foreground" />
+    </button>
+  );
+}
+
 function FavoriteListItem({
   deal,
   storeUrl,
@@ -841,7 +1004,9 @@ function FavoriteListItem({
   onToggleFavorite: (deal: Deal) => void;
 }) {
   const multiBuy = parseMultiBuyOffer(deal.promotionLabel);
-  const priceLabel = multiBuy ? formatMultiBuyHero(multiBuy) : formatPrice(deal.price);
+  const priceLabel = multiBuy
+    ? formatMultiBuyHero(multiBuy)
+    : formatPrice(deal.price);
 
   return (
     <article
@@ -902,15 +1067,18 @@ function DealCard({
   storeUrl,
   favorited,
   onToggleFavorite,
+  onDismiss,
 }: {
   deal: Deal;
   storeUrl?: string;
   favorited: boolean;
   onToggleFavorite: (deal: Deal) => void;
+  onDismiss: (deal: Deal) => void;
 }) {
   const chain = getChainMeta(deal.chain);
   const multiBuy = parseMultiBuyOffer(deal.promotionLabel);
-  const hasOriginal = deal.originalPrice != null && deal.originalPrice > deal.price;
+  const hasOriginal =
+    deal.originalPrice != null && deal.originalPrice > deal.price;
   const temporaryLabel = isTemporaryOfferLabel(deal.promotionLabel)
     ? deal.promotionLabel
     : undefined;
@@ -924,7 +1092,15 @@ function DealCard({
 
   return (
     <Card className="relative overflow-hidden">
-      <FavoriteButton favorited={favorited} onToggle={() => onToggleFavorite(deal)} />
+      <div className="absolute left-2 top-2 z-10">
+        <DismissButton onDismiss={() => onDismiss(deal)} />
+      </div>
+      <div className="absolute right-2 top-2 z-10">
+        <FavoriteButton
+          favorited={favorited}
+          onToggle={() => onToggleFavorite(deal)}
+        />
+      </div>
       {deal.imageUrl && (
         <div className="relative aspect-[4/3] bg-muted">
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -936,35 +1112,46 @@ function DealCard({
           />
         </div>
       )}
-      <CardHeader className={`space-y-2 pb-2 ${deal.imageUrl ? "" : "pr-12"}`}>
+      <CardHeader className={`space-y-2 pb-2 ${deal.imageUrl ? "" : "px-12"}`}>
         <div className="flex flex-wrap items-center gap-2">
           <Badge className={chainBadgeClass(deal.chain)} variant="outline">
             {chain.name}
           </Badge>
-          {deal.memberOnly && (
-            <Badge variant="secondary">Medlemspris</Badge>
-          )}
+          {deal.memberOnly && <Badge variant="secondary">Medlemspris</Badge>}
           {deal.savingsPercent != null && deal.savingsPercent > 0 ? (
-            <Badge className="bg-emerald-100 text-emerald-800" variant="outline">
+            <Badge
+              className="bg-emerald-100 text-emerald-800"
+              variant="outline"
+            >
               −{deal.savingsPercent}%
             </Badge>
           ) : (
-            <Badge className="bg-emerald-100 text-emerald-800" variant="outline">
+            <Badge
+              className="bg-emerald-100 text-emerald-800"
+              variant="outline"
+            >
               −
             </Badge>
           )}
           {campaignBadge && (
-            <Badge className="bg-amber-100 text-amber-900 border-amber-200" variant="outline">
+            <Badge
+              className="bg-amber-100 text-amber-900 border-amber-200"
+              variant="outline"
+            >
               {campaignBadge}
             </Badge>
           )}
         </div>
         <CardTitle className="text-base leading-snug">{deal.name}</CardTitle>
-        {(deal.volume || (deal.variantCount != null && deal.variantCount > 1)) && (
+        {(deal.volume ||
+          (deal.variantCount != null && deal.variantCount > 1)) && (
           <CardDescription>
-            {[deal.volume, deal.variantCount != null && deal.variantCount > 1
-              ? formatVariantCount(deal.variantCount)
-              : null]
+            {[
+              deal.volume,
+              deal.variantCount != null && deal.variantCount > 1
+                ? formatVariantCount(deal.variantCount)
+                : null,
+            ]
               .filter(Boolean)
               .join(" · ")}
           </CardDescription>
@@ -978,17 +1165,25 @@ function DealCard({
             </p>
             {hasOriginal && (
               <p className="text-sm text-muted-foreground">
-                ord. <span className="line-through">{formatCompactSek(deal.originalPrice!)}</span>/st
+                ord.{" "}
+                <span className="line-through">
+                  {formatCompactSek(deal.originalPrice!)}
+                </span>
+                /st
               </p>
             )}
             {deal.comparisonPrice && (
-              <p className="text-xs text-muted-foreground">{deal.comparisonPrice}</p>
+              <p className="text-xs text-muted-foreground">
+                {deal.comparisonPrice}
+              </p>
             )}
           </div>
         ) : (
           <div className="space-y-0.5">
             <div className="flex items-end gap-2">
-              <span className="text-2xl font-bold">{formatPrice(deal.price)}</span>
+              <span className="text-2xl font-bold">
+                {formatPrice(deal.price)}
+              </span>
               {hasOriginal ? (
                 <span className="text-sm text-muted-foreground line-through">
                   {formatPrice(deal.originalPrice)}
@@ -996,10 +1191,14 @@ function DealCard({
               ) : null}
             </div>
             {showPromotionCaption && (
-              <p className="text-sm font-medium text-primary">{deal.promotionLabel}</p>
+              <p className="text-sm font-medium text-primary">
+                {deal.promotionLabel}
+              </p>
             )}
             {deal.comparisonPrice && (
-              <p className="text-xs text-muted-foreground">{deal.comparisonPrice}</p>
+              <p className="text-xs text-muted-foreground">
+                {deal.comparisonPrice}
+              </p>
             )}
           </div>
         )}
@@ -1045,23 +1244,44 @@ function EmptyState({
   search,
   category,
   filtersActive,
+  allDismissed,
+  onOpenDismissed,
 }: {
   search: string;
   category: string;
   filtersActive: boolean;
+  allDismissed: boolean;
+  onOpenDismissed?: () => void;
 }) {
   return (
     <div className="rounded-xl border border-dashed p-12 text-center">
-      <p className="text-lg font-medium">Inga erbjudanden matchar filtret</p>
-      <p className="mt-2 text-sm text-muted-foreground">
-        {search
-          ? `Inget resultat för "${search}"${category !== "Alla" ? ` i kategorin ${category}` : ""}.`
-          : category !== "Alla"
-            ? `Inga erbjudanden i kategorin ${category} just nu.`
-            : filtersActive
-              ? "Prova att visa fler butiker eller sänka rabattnivån."
-              : "Prova att uppdatera eller välja en annan butik."}
+      <p className="text-lg font-medium">
+        {allDismissed
+          ? "Inga erbjudanden att visa"
+          : "Inga erbjudanden matchar filtret"}
       </p>
+      <p className="mt-2 text-sm text-muted-foreground">
+        {allDismissed
+          ? "Alla erbjudanden är dolda. Öppna papperskorgen för att visa dem igen."
+          : search
+            ? `Inget resultat för "${search}"${category !== "Alla" ? ` i kategorin ${category}` : ""}.`
+            : category !== "Alla"
+              ? `Inga erbjudanden i kategorin ${category} just nu.`
+              : filtersActive
+                ? "Prova att visa fler butiker eller sänka rabattnivån."
+                : "Prova att uppdatera eller välja en annan butik."}
+      </p>
+      {allDismissed && onOpenDismissed ? (
+        <Button
+          type="button"
+          variant="outline"
+          className="mt-4"
+          onClick={onOpenDismissed}
+        >
+          <Trash2 className="h-4 w-4" />
+          Öppna papperskorgen
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -1073,7 +1293,7 @@ function FavoritesPanel({
   onClose,
   onToggleFavorite,
 }: {
-  groups: FavoriteGroup[];
+  groups: DealGroup[];
   selection: StoreSelection;
   currentDealIds: ReadonlySet<string>;
   onClose: () => void;
@@ -1120,7 +1340,13 @@ function FavoritesPanel({
               </p>
             </div>
           </div>
-          <Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label="Stäng">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            aria-label="Stäng"
+          >
             <X className="h-4 w-4" />
           </Button>
         </div>
@@ -1166,6 +1392,198 @@ function FavoritesPanel({
                           deal.productUrl
                         }
                         onToggleFavorite={onToggleFavorite}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          )}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function DismissedListItem({
+  deal,
+  storeUrl,
+  onRestore,
+}: {
+  deal: Deal;
+  storeUrl?: string;
+  onRestore: (deal: Deal) => void;
+}) {
+  const multiBuy = parseMultiBuyOffer(deal.promotionLabel);
+  const priceLabel = multiBuy
+    ? formatMultiBuyHero(multiBuy)
+    : formatPrice(deal.price);
+
+  return (
+    <article className="flex items-start gap-3 rounded-xl border bg-card p-3">
+      {deal.imageUrl ? (
+        <div className="h-16 w-16 shrink-0 overflow-hidden rounded-md bg-muted">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={deal.imageUrl}
+            alt=""
+            className="h-full w-full object-contain p-1"
+            loading="lazy"
+          />
+        </div>
+      ) : null}
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="text-sm font-medium leading-snug">{deal.name}</p>
+        {deal.volume ? (
+          <p className="text-xs text-muted-foreground">{deal.volume}</p>
+        ) : null}
+        {deal.variantCount != null && deal.variantCount > 1 ? (
+          <p className="text-xs text-muted-foreground">
+            {formatVariantCount(deal.variantCount)}
+          </p>
+        ) : null}
+        <p className="text-sm font-semibold">{priceLabel}</p>
+        {storeUrl ? (
+          <a
+            href={storeUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+          >
+            Till butiken
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        aria-label="Visa erbjudandet igen"
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground"
+        onClick={() => onRestore(deal)}
+      >
+        <Undo2 className="h-5 w-5" />
+      </button>
+    </article>
+  );
+}
+
+function DismissedPanel({
+  groups,
+  selection,
+  onClose,
+  onRestore,
+  onClearAll,
+}: {
+  groups: DealGroup[];
+  selection: StoreSelection;
+  onClose: () => void;
+  onRestore: (deal: Deal) => void;
+  onClearAll: () => void;
+}) {
+  const count = groups.reduce((sum, group) => sum + group.items.length, 0);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-black/40"
+      onClick={onClose}
+    >
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label="Papperskorg"
+        className="flex h-full w-full max-w-lg flex-col bg-background shadow-xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Trash2 className="h-5 w-5 text-muted-foreground" />
+            <div>
+              <p className="text-sm font-semibold">Papperskorg</p>
+              <p className="text-xs text-muted-foreground">
+                {count === 0
+                  ? "Inga dolda erbjudanden"
+                  : count === 1
+                    ? "1 dolt erbjudande"
+                    : `${count} dolda erbjudanden`}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            {count > 0 ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onClearAll}
+              >
+                Töm
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={onClose}
+              aria-label="Stäng"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-4 py-4">
+          {groups.length === 0 ? (
+            <div className="rounded-xl border border-dashed p-8 text-center">
+              <Trash2 className="mx-auto h-8 w-8 text-muted-foreground" />
+              <p className="mt-3 font-medium">Papperskorgen är tom</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Tryck på krysset på ett erbjudande för att dölja det här.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {groups.map((group) => (
+                <section key={group.chain.id} className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Store className="h-4 w-4 text-muted-foreground" />
+                    <div className="min-w-0">
+                      <h2
+                        className="text-sm font-semibold leading-tight"
+                        style={{ color: group.chain.color }}
+                      >
+                        {group.chain.name}
+                      </h2>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {group.storeName}
+                      </p>
+                    </div>
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      {group.items.length}
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {group.items.map((deal) => (
+                      <DismissedListItem
+                        key={deal.id}
+                        deal={deal}
+                        storeUrl={
+                          storeOffersUrl(deal.chain, selection[deal.chain]) ??
+                          deal.productUrl
+                        }
+                        onRestore={onRestore}
                       />
                     ))}
                   </div>
